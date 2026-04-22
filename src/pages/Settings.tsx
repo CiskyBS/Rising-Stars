@@ -1,86 +1,92 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
+
 import BottomNav from "@/components/BottomNav";
 import DatabaseSetupCard from "@/components/DatabaseSetupCard";
 import Logo from "@/components/Logo";
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
+  type AssociationDocumentRow,
   type AssociationProfileRow,
+  REQUIRED_DOCUMENTS,
+  createInviteCode,
+  createQrValue,
+  ensureAdminContext,
   getQrCodeImageUrl,
+  getUserProfile,
   isSupabaseConfigured,
+  logAuditEvent,
+  readFileAsDataUrl,
   supabase,
 } from "@/lib/supabase";
 import { showError, showSuccess } from "@/utils/toast";
-import { ArrowLeft, Copy, KeyRound, LoaderCircle, LogOut, Mail, QrCode, RefreshCw, Save, ShieldCheck } from "lucide-react";
-
-const createQrValue = (userId: string) => `rising-stars:${userId}:${crypto.randomUUID()}`;
+import {
+  ArrowLeft,
+  Copy,
+  KeyRound,
+  LoaderCircle,
+  LogOut,
+  Mail,
+  Palette,
+  QrCode,
+  RefreshCw,
+  Save,
+  Send,
+  ShieldCheck,
+  Share2,
+  Upload,
+} from "lucide-react";
 
 const Settings = () => {
   const navigate = useNavigate();
-  const [userId, setUserId] = useState("");
+  const [association, setAssociation] = useState<AssociationProfileRow | null>(null);
+  const [documents, setDocuments] = useState<AssociationDocumentRow[]>([]);
   const [email, setEmail] = useState("");
   const [nextEmail, setNextEmail] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [associationName, setAssociationName] = useState("");
-  const [profile, setProfile] = useState<AssociationProfileRow | null>(null);
+  const [appTitle, setAppTitle] = useState("");
+  const [primaryColor, setPrimaryColor] = useState("#0f766e");
+  const [secondaryColor, setSecondaryColor] = useState("#f59e0b");
+  const [accentColor, setAccentColor] = useState("#7c3aed");
+  const [logoPreview, setLogoPreview] = useState("");
+  const [logoFile, setLogoFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(true);
-  const [savingProfile, setSavingProfile] = useState(false);
+  const [savingBrand, setSavingBrand] = useState(false);
   const [savingEmail, setSavingEmail] = useState(false);
   const [savingPassword, setSavingPassword] = useState(false);
+  const [regeneratingInvite, setRegeneratingInvite] = useState(false);
   const [regeneratingQr, setRegeneratingQr] = useState(false);
+  const [uploadingType, setUploadingType] = useState<string | null>(null);
   const [dbError, setDbError] = useState("");
+  const [inviteOrigin, setInviteOrigin] = useState("");
+  const [documentDrafts, setDocumentDrafts] = useState<Record<string, { title: string; file: File | null }>>({});
 
-  const loadProfile = useCallback(async (currentUserId: string, currentEmail: string) => {
+  const loadDocuments = useCallback(async (associationId: string) => {
     if (!supabase) {
-      setDbError("Supabase non è configurato.");
-      setLoading(false);
       return;
     }
 
     const { data, error } = await supabase
-      .from("association_profiles")
-      .select("id, owner_id, association_name, qr_code_value, created_at")
-      .maybeSingle();
+      .from("association_documents")
+      .select("*")
+      .eq("association_id", associationId)
+      .order("uploaded_at", { ascending: false });
 
     if (error) {
       setDbError(error.message);
-      setLoading(false);
       return;
     }
 
-    if (data) {
-      const typedProfile = data as AssociationProfileRow;
-      setProfile(typedProfile);
-      setAssociationName(typedProfile.association_name);
-      setDbError("");
-      setLoading(false);
-      return;
-    }
+    setDocuments((data ?? []) as AssociationDocumentRow[]);
+  }, []);
 
-    const defaultName = currentEmail.split("@")[0]?.replace(/[._-]+/g, " ").trim() || "La tua associazione";
-    const { data: insertedProfile, error: insertError } = await supabase
-      .from("association_profiles")
-      .insert({
-        owner_id: currentUserId,
-        association_name: defaultName,
-        qr_code_value: createQrValue(currentUserId),
-      })
-      .select("id, owner_id, association_name, qr_code_value, created_at")
-      .single();
-
-    if (insertError) {
-      setDbError(insertError.message);
-      setLoading(false);
-      return;
-    }
-
-    const typedProfile = insertedProfile as AssociationProfileRow;
-    setProfile(typedProfile);
-    setAssociationName(typedProfile.association_name);
-    setDbError("");
-    setLoading(false);
+  useEffect(() => {
+    setInviteOrigin(window.location.origin);
   }, []);
 
   useEffect(() => {
@@ -92,7 +98,7 @@ const Settings = () => {
 
     let mounted = true;
 
-    supabase.auth.getUser().then(({ data, error }) => {
+    supabase.auth.getUser().then(async ({ data, error }) => {
       if (!mounted) {
         return;
       }
@@ -102,44 +108,76 @@ const Settings = () => {
         return;
       }
 
-      const currentEmail = data.user.email ?? "";
-      setUserId(data.user.id);
-      setEmail(currentEmail);
-      setNextEmail(currentEmail);
-      void loadProfile(data.user.id, currentEmail);
+      const existingProfile = await getUserProfile(data.user.id);
+      if (existingProfile?.role === "parent") {
+        navigate("/family", { replace: true });
+        return;
+      }
+
+      const adminContext = await ensureAdminContext(data.user);
+      if (!adminContext) {
+        setLoading(false);
+        return;
+      }
+
+      setAssociation(adminContext.association);
+      setAssociationName(adminContext.association.association_name);
+      setAppTitle(adminContext.association.app_title);
+      setPrimaryColor(adminContext.association.primary_color);
+      setSecondaryColor(adminContext.association.secondary_color);
+      setAccentColor(adminContext.association.accent_color);
+      setLogoPreview(adminContext.association.logo_data_url);
+      setEmail(data.user.email ?? "");
+      setNextEmail(data.user.email ?? "");
+      await loadDocuments(adminContext.association.id);
+      setLoading(false);
     });
 
     return () => {
       mounted = false;
     };
-  }, [loadProfile, navigate]);
+  }, [loadDocuments, navigate]);
 
-  const qrCodeImageUrl = useMemo(() => (profile ? getQrCodeImageUrl(profile.qr_code_value) : ""), [profile]);
+  const inviteLink = useMemo(() => {
+    if (!association) {
+      return "";
+    }
 
-  const handleSaveProfile = async (event: React.FormEvent<HTMLFormElement>) => {
+    return `${inviteOrigin}/join/${association.invite_code}`;
+  }, [association, inviteOrigin]);
+
+  const qrCodeImageUrl = useMemo(() => (association ? getQrCodeImageUrl(association.qr_code_value) : ""), [association]);
+
+  const handleBrandSave = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
-    if (!profile || !supabase) {
+    if (!association || !supabase) {
+
       return;
     }
 
-    const trimmedName = associationName.trim();
+    setSavingBrand(true);
+    let nextLogoData = logoPreview;
 
-    if (!trimmedName) {
-      showError("Inserisci il nome dell'associazione");
-      return;
+    if (logoFile) {
+      nextLogoData = await readFileAsDataUrl(logoFile);
     }
-
-    setSavingProfile(true);
 
     const { data, error } = await supabase
       .from("association_profiles")
-      .update({ association_name: trimmedName })
-      .eq("id", profile.id)
-      .select("id, owner_id, association_name, qr_code_value, created_at")
+      .update({
+        association_name: associationName.trim() || association.association_name,
+        app_title: appTitle.trim() || association.app_title,
+        primary_color: primaryColor,
+        secondary_color: secondaryColor,
+        accent_color: accentColor,
+        logo_data_url: nextLogoData,
+      })
+      .eq("id", association.id)
+      .select("*")
       .single();
 
-    setSavingProfile(false);
+    setSavingBrand(false);
 
     if (error) {
       setDbError(error.message);
@@ -147,26 +185,49 @@ const Settings = () => {
       return;
     }
 
-    setProfile(data as AssociationProfileRow);
-    setDbError("");
-    showSuccess("Profilo associazione aggiornato");
+    const nextAssociation = data as AssociationProfileRow;
+    setAssociation(nextAssociation);
+    setLogoPreview(nextAssociation.logo_data_url);
+    setLogoFile(null);
+    await logAuditEvent({
+      associationId: nextAssociation.id,
+      actorRole: "admin",
+      entityType: "association_profile",
+      entityId: nextAssociation.id,
+      action: "branding_updated",
+      details: {
+        association_name: nextAssociation.association_name,
+        app_title: nextAssociation.app_title,
+      },
+    });
+    showSuccess("Branding e dati associazione salvati");
   };
 
-  const handleRegenerateQr = async () => {
-    if (!profile || !supabase || !userId) {
+  const handleUploadDocument = async (documentType: string) => {
+    if (!association || !supabase) {
       return;
     }
 
-    setRegeneratingQr(true);
+    const draft = documentDrafts[documentType];
+    if (!draft?.file) {
+      showError("Seleziona prima un file");
+      return;
+    }
 
-    const { data, error } = await supabase
-      .from("association_profiles")
-      .update({ qr_code_value: createQrValue(userId) })
-      .eq("id", profile.id)
-      .select("id, owner_id, association_name, qr_code_value, created_at")
-      .single();
-
-    setRegeneratingQr(false);
+    setUploadingType(documentType);
+    const fileData = await readFileAsDataUrl(draft.file);
+    const { error } = await supabase.from("association_documents").upsert(
+      {
+        association_id: association.id,
+        document_type: documentType,
+        title: draft.title.trim() || REQUIRED_DOCUMENTS.find((item) => item.type === documentType)?.label || "Documento",
+        file_name: draft.file.name,
+        file_data: fileData,
+        required: true,
+      },
+      { onConflict: "association_id,document_type" },
+    );
+    setUploadingType(null);
 
     if (error) {
       setDbError(error.message);
@@ -174,29 +235,25 @@ const Settings = () => {
       return;
     }
 
-    setProfile(data as AssociationProfileRow);
-    setDbError("");
-    showSuccess("QR personale rigenerato");
+    await loadDocuments(association.id);
+    await logAuditEvent({
+      associationId: association.id,
+      actorRole: "admin",
+      entityType: "association_document",
+      action: "document_uploaded",
+      details: { document_type: documentType, file_name: draft.file.name },
+    });
+    showSuccess("Documento caricato con successo");
   };
 
-  const handleCopyQrValue = async () => {
-    if (!profile) {
-      return;
-    }
-
-    await navigator.clipboard.writeText(profile.qr_code_value);
-    showSuccess("Codice QR copiato");
-  };
-
-  const handleUpdateEmail = async (event: React.FormEvent<HTMLFormElement>) => {
+  const handleUpdateEmail = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (!supabase || !association) {
 
-    if (!supabase) {
       return;
     }
 
     const trimmedEmail = nextEmail.trim();
-
     if (!trimmedEmail) {
       showError("Inserisci una email valida");
       return;
@@ -212,13 +269,19 @@ const Settings = () => {
     }
 
     setEmail(trimmedEmail);
-    showSuccess("Richiesta di cambio email inviata. Controlla la casella di posta.");
+    await logAuditEvent({
+      associationId: association.id,
+      actorRole: "admin",
+      entityType: "account",
+      action: "email_update_requested",
+      details: { new_email: trimmedEmail },
+    });
+    showSuccess("Richiesta di cambio email inviata. Controlla la posta.");
   };
 
-  const handleUpdatePassword = async (event: React.FormEvent<HTMLFormElement>) => {
+  const handleUpdatePassword = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-
-    if (!supabase) {
+    if (!supabase || !association) {
       return;
     }
 
@@ -237,7 +300,82 @@ const Settings = () => {
     }
 
     setNewPassword("");
+    await logAuditEvent({
+      associationId: association.id,
+      actorRole: "admin",
+      entityType: "account",
+      action: "password_updated",
+    });
     showSuccess("Password aggiornata correttamente");
+  };
+
+  const handleRegenerateInvite = async () => {
+    if (!association || !supabase) {
+      return;
+    }
+
+    setRegeneratingInvite(true);
+    const { data, error } = await supabase
+      .from("association_profiles")
+      .update({ invite_code: createInviteCode() })
+      .eq("id", association.id)
+      .select("*")
+      .single();
+    setRegeneratingInvite(false);
+
+    if (error) {
+      setDbError(error.message);
+      showError(error.message);
+      return;
+    }
+
+    const nextAssociation = data as AssociationProfileRow;
+    setAssociation(nextAssociation);
+    await logAuditEvent({
+      associationId: nextAssociation.id,
+      actorRole: "admin",
+      entityType: "association_profile",
+      entityId: nextAssociation.id,
+      action: "invite_link_regenerated",
+    });
+    showSuccess("Codice invito rigenerato");
+  };
+
+  const handleRegenerateQr = async () => {
+    if (!association || !supabase) {
+      return;
+    }
+
+    setRegeneratingQr(true);
+    const { data, error } = await supabase
+      .from("association_profiles")
+      .update({ qr_code_value: createQrValue(association.id) })
+      .eq("id", association.id)
+      .select("*")
+      .single();
+    setRegeneratingQr(false);
+
+    if (error) {
+      setDbError(error.message);
+      showError(error.message);
+      return;
+    }
+
+    const nextAssociation = data as AssociationProfileRow;
+    setAssociation(nextAssociation);
+    await logAuditEvent({
+      associationId: nextAssociation.id,
+      actorRole: "admin",
+      entityType: "association_profile",
+      entityId: nextAssociation.id,
+      action: "association_qr_regenerated",
+    });
+    showSuccess("QR personale rigenerato");
+  };
+
+  const copyText = async (value: string, message: string) => {
+    await navigator.clipboard.writeText(value);
+    showSuccess(message);
   };
 
   const handleSignOut = async () => {
@@ -247,6 +385,19 @@ const Settings = () => {
 
     navigate("/login", { replace: true });
   };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-slate-50 px-4 py-10 sm:px-6">
+        <Card className="mx-auto max-w-4xl rounded-[2rem] border-none bg-white shadow-lg shadow-slate-200/60">
+          <CardContent className="flex items-center justify-center gap-3 p-10 text-slate-500">
+            <LoaderCircle className="h-5 w-5 animate-spin" />
+            Caricamento configurazione admin...
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-50 pb-28">
@@ -281,121 +432,293 @@ const Settings = () => {
             <div className="max-w-2xl">
               <div className="inline-flex items-center gap-2 rounded-full bg-white/15 px-4 py-2 text-[11px] font-black uppercase tracking-[0.28em] text-white/90">
                 <ShieldCheck className="h-4 w-4" />
-                Profilo associazione
+                Control room admin
               </div>
               <h1 className="mt-5 text-3xl font-black leading-tight sm:text-4xl">
-                Gestisci accesso, QR personale e impostazioni dell'associazione.
+                Personalizza l’app e invita le famiglie.
               </h1>
               <p className="mt-3 text-sm font-medium text-white/80 sm:text-base">
-                Qui puoi aggiornare nome associazione, email, password e scaricare il QR da usare per i check-in.
+                Colori, logo, documenti obbligatori, QR personale e link di onboarding convivono tutti qui, con tracciamento sul database.
               </p>
             </div>
 
-            <div className="rounded-[1.75rem] bg-white/10 p-5 backdrop-blur-sm lg:min-w-[260px]">
-              <p className="text-[11px] font-black uppercase tracking-[0.22em] text-white/70">Account</p>
-              <p className="mt-2 text-sm font-black text-white">{email || "In caricamento..."}</p>
+            <div className="rounded-[1.75rem] bg-white/10 p-5 backdrop-blur-sm lg:min-w-[280px]">
+              <p className="text-[11px] font-black uppercase tracking-[0.22em] text-white/70">Account admin</p>
+              <p className="mt-2 text-sm font-black text-white">{email || "—"}</p>
               <p className="mt-3 text-[11px] font-medium text-white/75">
-                {isSupabaseConfigured ? "Collegato a Supabase" : "Configurazione Supabase mancante"}
+                {isSupabaseConfigured ? "Supabase collegato" : "Configurazione Supabase mancante"}
               </p>
             </div>
           </div>
         </section>
 
-        {dbError && <DatabaseSetupCard message={`Per usare QR e profilo associazione devi rieseguire questo SQL su Supabase. Errore: ${dbError}`} />}
+        {dbError && <DatabaseSetupCard message={`Per usare tutte le nuove funzioni devi eseguire lo SQL aggiornato in Supabase. Errore: ${dbError}`} />}
 
-        {loading ? (
-          <Card className="rounded-[2rem] border-none bg-white shadow-lg shadow-slate-200/60">
-            <CardContent className="flex items-center justify-center gap-3 p-10 text-slate-500">
-              <LoaderCircle className="h-5 w-5 animate-spin" />
-              Caricamento profilo associazione...
-            </CardContent>
-          </Card>
-        ) : (
-          <section className="grid gap-6 lg:grid-cols-[1.05fr_0.95fr]">
+        <Tabs defaultValue="brand" className="space-y-4">
+          <TabsList className="h-auto w-full flex-wrap rounded-[1.5rem] bg-white p-2 shadow-sm shadow-slate-200/60">
+            <TabsTrigger value="brand" className="rounded-[1rem] px-4 py-2 font-black">Brand</TabsTrigger>
+            <TabsTrigger value="invite" className="rounded-[1rem] px-4 py-2 font-black">Invito & QR</TabsTrigger>
+            <TabsTrigger value="documents" className="rounded-[1rem] px-4 py-2 font-black">Documenti</TabsTrigger>
+            <TabsTrigger value="security" className="rounded-[1rem] px-4 py-2 font-black">Accesso</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="brand">
+            <Card className="rounded-[2rem] border-none bg-white shadow-xl shadow-slate-200/70">
+              <CardContent className="p-6 sm:p-7">
+                <form onSubmit={handleBrandSave} className="grid gap-6 lg:grid-cols-[1.05fr_0.95fr]">
+                  <div className="space-y-5">
+                    <div className="flex items-start gap-4">
+                      <div className="rounded-[1.5rem] bg-sky-100 p-3 text-sky-700">
+                        <Palette className="h-6 w-6" />
+                      </div>
+                      <div>
+                        <p className="text-[11px] font-black uppercase tracking-[0.22em] text-slate-400">Skin personalizzata</p>
+                        <h2 className="mt-1 text-2xl font-black text-slate-900">Identità visiva</h2>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <label className="text-sm font-black text-slate-700">Nome associazione</label>
+                      <Input value={associationName} onChange={(event) => setAssociationName(event.target.value)} className="h-12 rounded-2xl border-slate-200 bg-slate-50" />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-sm font-black text-slate-700">Titolo app famiglie</label>
+                      <Input value={appTitle} onChange={(event) => setAppTitle(event.target.value)} className="h-12 rounded-2xl border-slate-200 bg-slate-50" />
+                    </div>
+
+                    <div className="grid gap-4 sm:grid-cols-3">
+                      <div className="space-y-2">
+                        <label className="text-sm font-black text-slate-700">Colore primario</label>
+                        <Input type="color" value={primaryColor} onChange={(event) => setPrimaryColor(event.target.value)} className="h-12 rounded-2xl border-slate-200 bg-slate-50 p-2" />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-sm font-black text-slate-700">Colore secondario</label>
+                        <Input type="color" value={secondaryColor} onChange={(event) => setSecondaryColor(event.target.value)} className="h-12 rounded-2xl border-slate-200 bg-slate-50 p-2" />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-sm font-black text-slate-700">Colore accento</label>
+                        <Input type="color" value={accentColor} onChange={(event) => setAccentColor(event.target.value)} className="h-12 rounded-2xl border-slate-200 bg-slate-50 p-2" />
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <label className="text-sm font-black text-slate-700">Logo associazione</label>
+                      <Input
+                        type="file"
+                        accept="image/*"
+                        onChange={(event) => setLogoFile(event.target.files?.[0] ?? null)}
+                        className="h-12 rounded-2xl border-slate-200 bg-slate-50 file:mr-4 file:rounded-full file:border-0 file:bg-sky-700 file:px-4 file:py-2 file:text-sm file:font-black file:text-white"
+                      />
+                    </div>
+
+                    <Button type="submit" disabled={savingBrand} className="rounded-2xl bg-sky-700 text-white hover:bg-sky-800">
+                      {savingBrand ? <LoaderCircle className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
+                      Salva skin e branding
+                    </Button>
+                  </div>
+
+                  <div className="rounded-[2rem] p-6 text-white shadow-xl" style={{ backgroundColor: primaryColor }}>
+                    <div className="rounded-full bg-white/15 px-4 py-2 text-[11px] font-black uppercase tracking-[0.22em] w-fit">
+                      Anteprima famiglie
+                    </div>
+                    <div className="mt-6 flex items-center gap-4">
+                      <div className="flex h-20 w-20 items-center justify-center overflow-hidden rounded-[1.75rem] bg-white/20">
+                        {logoPreview ? <img src={logoPreview} alt="Logo associazione" className="h-full w-full object-cover" /> : <Logo variant="header" className="text-white [&_span]:text-white" />}
+                      </div>
+                      <div>
+                        <h3 className="text-2xl font-black">{associationName || "La tua associazione"}</h3>
+                        <p className="mt-2 text-sm font-medium text-white/80">{appTitle || "Family Portal"}</p>
+                      </div>
+                    </div>
+                    <div className="mt-6 flex gap-3">
+                      <div className="h-10 flex-1 rounded-2xl" style={{ backgroundColor: secondaryColor }} />
+                      <div className="h-10 flex-1 rounded-2xl" style={{ backgroundColor: accentColor }} />
+                    </div>
+                  </div>
+                </form>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="invite">
+            <div className="grid gap-6 lg:grid-cols-[1fr_1fr]">
+              <Card className="rounded-[2rem] border-none bg-white shadow-xl shadow-slate-200/70">
+                <CardContent className="space-y-5 p-6 sm:p-7">
+                  <div className="flex items-start gap-4">
+                    <div className="rounded-[1.5rem] bg-sky-100 p-3 text-sky-700">
+                      <Share2 className="h-6 w-6" />
+                    </div>
+                    <div>
+                      <p className="text-[11px] font-black uppercase tracking-[0.22em] text-slate-400">Onboarding genitori</p>
+                      <h2 className="mt-1 text-2xl font-black text-slate-900">Link di invito</h2>
+                      <p className="mt-2 text-sm font-medium text-slate-500">
+                        Questo link apre la registrazione guidata, mostra i documenti obbligatori e applica la skin scelta per la tua associazione.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="rounded-[1.5rem] bg-slate-50 p-4 text-sm font-medium text-slate-700 break-all">{inviteLink || "Link non disponibile"}</div>
+
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <Button onClick={() => void copyText(inviteLink, "Link copiato negli appunti")} className="rounded-2xl bg-slate-900 text-white hover:bg-slate-800">
+                      <Copy className="mr-2 h-4 w-4" />
+                      Copia link
+                    </Button>
+                    <Button asChild variant="outline" className="rounded-2xl border-slate-200">
+                      <a href={`mailto:?subject=Registrazione famiglie&body=${encodeURIComponent(`Apri questo link per registrarti: ${inviteLink}`)}`}>
+                        <Mail className="mr-2 h-4 w-4" />
+                        Invia via email
+                      </a>
+                    </Button>
+                    <Button asChild variant="outline" className="rounded-2xl border-slate-200">
+                      <a href={`https://wa.me/?text=${encodeURIComponent(`Registrati qui: ${inviteLink}`)}`} target="_blank" rel="noreferrer">
+                        <Send className="mr-2 h-4 w-4" />
+                        Invia via WhatsApp
+                      </a>
+                    </Button>
+                    <Button asChild variant="outline" className="rounded-2xl border-slate-200">
+                      <a href={`sms:?body=${encodeURIComponent(`Registrati qui: ${inviteLink}`)}`}>
+                        <Send className="mr-2 h-4 w-4" />
+                        Invia via SMS
+                      </a>
+                    </Button>
+                  </div>
+
+                  <div className="flex flex-col gap-3 sm:flex-row">
+                    <Button type="button" variant="outline" onClick={handleRegenerateInvite} disabled={regeneratingInvite} className="rounded-2xl border-slate-200">
+                      {regeneratingInvite ? <LoaderCircle className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
+                      Rigenera link
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card className="rounded-[2rem] border-none bg-white shadow-xl shadow-slate-200/70">
+                <CardContent className="space-y-5 p-6 sm:p-7">
+                  <div className="flex items-start gap-4">
+                    <div className="rounded-[1.5rem] bg-sky-100 p-3 text-sky-700">
+                      <QrCode className="h-6 w-6" />
+                    </div>
+                    <div>
+                      <p className="text-[11px] font-black uppercase tracking-[0.22em] text-slate-400">QR associazione</p>
+                      <h2 className="mt-1 text-2xl font-black text-slate-900">Centro / posizione</h2>
+                      <p className="mt-2 text-sm font-medium text-slate-500">
+                        Questo QR può essere stampato o mostrato all’operatore. Quando viene scansionato nello scanner, l’app imposta automaticamente il nome dell’associazione come centro attivo.
+                      </p>
+                    </div>
+                  </div>
+
+                  {association && (
+                    <>
+                      <div className="rounded-[2rem] border border-slate-200 bg-slate-50 p-4">
+                        <img src={qrCodeImageUrl} alt="QR personale associazione" className="mx-auto w-full max-w-[300px] rounded-[1.5rem] bg-white p-4 shadow-inner" />
+                      </div>
+                      <div className="rounded-[1.5rem] bg-slate-50 p-4 text-sm font-medium text-slate-700 break-all">{association.qr_code_value}</div>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <Button onClick={() => void copyText(association.qr_code_value, "Codice QR copiato")} className="rounded-2xl bg-slate-900 text-white hover:bg-slate-800">
+                          <Copy className="mr-2 h-4 w-4" />
+                          Copia codice
+                        </Button>
+                        <Button type="button" variant="outline" onClick={handleRegenerateQr} disabled={regeneratingQr} className="rounded-2xl border-slate-200">
+                          {regeneratingQr ? <LoaderCircle className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
+                          Rigenera QR
+                        </Button>
+                      </div>
+                    </>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+          </TabsContent>
+
+          <TabsContent value="documents">
             <Card className="rounded-[2rem] border-none bg-white shadow-xl shadow-slate-200/70">
               <CardContent className="p-6 sm:p-7">
                 <div className="mb-6 flex items-start gap-4">
                   <div className="rounded-[1.5rem] bg-sky-100 p-3 text-sky-700">
-                    <QrCode className="h-6 w-6" />
+                    <Upload className="h-6 w-6" />
                   </div>
                   <div>
-                    <p className="text-[11px] font-black uppercase tracking-[0.22em] text-slate-400">QR personale</p>
-                    <h2 className="mt-1 text-2xl font-black text-slate-900">Il QR della tua associazione</h2>
+                    <p className="text-[11px] font-black uppercase tracking-[0.22em] text-slate-400">Firma digitale guidata</p>
+                    <h2 className="mt-1 text-2xl font-black text-slate-900">Documenti obbligatori</h2>
                     <p className="mt-2 text-sm font-medium text-slate-500">
-                      Questo QR viene generato per il tuo account. Puoi salvarlo o mostrarlo agli operatori per impostare il centro con una scansione.
+                      Carica qui i documenti già pronti. Il genitore li visualizza durante la registrazione e li accetta prima di completare l’account.
                     </p>
                   </div>
                 </div>
 
-                {profile && (
-                  <div className="space-y-4">
-                    <div className="overflow-hidden rounded-[2rem] border border-slate-200 bg-slate-50 p-4">
-                      <img
-                        src={qrCodeImageUrl}
-                        alt="QR personale associazione"
-                        className="mx-auto w-full max-w-[280px] rounded-[1.5rem] bg-white p-4 shadow-inner"
-                      />
-                    </div>
+                <Accordion type="single" collapsible className="rounded-[1.5rem] border border-slate-200 px-4">
+                  {REQUIRED_DOCUMENTS.map((document) => {
+                    const uploadedDocument = documents.find((item) => item.document_type === document.type);
+                    const draft = documentDrafts[document.type] ?? { title: uploadedDocument?.title ?? document.label, file: null };
 
-                    <div className="rounded-[1.5rem] bg-slate-50 p-4">
-                      <p className="text-[11px] font-black uppercase tracking-[0.22em] text-slate-400">Contenuto del QR</p>
-                      <p className="mt-2 break-all text-sm font-medium text-slate-700">{profile.qr_code_value}</p>
-                    </div>
-
-                    <div className="grid gap-3 sm:grid-cols-3">
-                      <Button onClick={handleCopyQrValue} className="rounded-2xl bg-slate-900 text-white hover:bg-slate-800">
-                        <Copy className="mr-2 h-4 w-4" />
-                        Copia codice
-                      </Button>
-                      <Button asChild variant="outline" className="rounded-2xl border-slate-200">
-                        <a href={qrCodeImageUrl} target="_blank" rel="noreferrer">
-                          Scarica / Apri QR
-                        </a>
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        onClick={handleRegenerateQr}
-                        disabled={regeneratingQr}
-                        className="rounded-2xl border-slate-200"
-                      >
-                        {regeneratingQr ? <LoaderCircle className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
-                        Rigenera QR
-                      </Button>
-                    </div>
-                  </div>
-                )}
+                    return (
+                      <AccordionItem key={document.type} value={document.type} className="border-slate-200">
+                        <AccordionTrigger className="text-left text-base font-black text-slate-900 hover:no-underline">
+                          <div>
+                            <p>{document.label}</p>
+                            <p className="mt-1 text-sm font-medium text-slate-500">{uploadedDocument ? `Caricato: ${uploadedDocument.file_name}` : document.description}</p>
+                          </div>
+                        </AccordionTrigger>
+                        <AccordionContent>
+                          <div className="space-y-4 pb-2">
+                            <div className="space-y-2">
+                              <label className="text-sm font-black text-slate-700">Titolo</label>
+                              <Input
+                                value={draft.title}
+                                onChange={(event) =>
+                                  setDocumentDrafts((current) => ({
+                                    ...current,
+                                    [document.type]: { ...draft, title: event.target.value },
+                                  }))
+                                }
+                                className="h-12 rounded-2xl border-slate-200 bg-slate-50"
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <label className="text-sm font-black text-slate-700">File</label>
+                              <Input
+                                type="file"
+                                accept=".pdf,.png,.jpg,.jpeg,.doc,.docx"
+                                onChange={(event) =>
+                                  setDocumentDrafts((current) => ({
+                                    ...current,
+                                    [document.type]: { ...draft, file: event.target.files?.[0] ?? null },
+                                  }))
+                                }
+                                className="h-12 rounded-2xl border-slate-200 bg-slate-50 file:mr-4 file:rounded-full file:border-0 file:bg-sky-700 file:px-4 file:py-2 file:text-sm file:font-black file:text-white"
+                              />
+                            </div>
+                            <div className="flex flex-col gap-3 sm:flex-row">
+                              <Button
+                                type="button"
+                                onClick={() => void handleUploadDocument(document.type)}
+                                disabled={uploadingType === document.type}
+                                className="rounded-2xl bg-sky-700 text-white hover:bg-sky-800"
+                              >
+                                {uploadingType === document.type ? <LoaderCircle className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}
+                                {uploadedDocument ? "Sostituisci documento" : "Carica documento"}
+                              </Button>
+                              {uploadedDocument && (
+                                <Button asChild variant="outline" className="rounded-2xl border-slate-200">
+                                  <a href={uploadedDocument.file_data} download={uploadedDocument.file_name}>
+                                    Scarica documento corrente
+                                  </a>
+                                </Button>
+                              )}
+                            </div>
+                          </div>
+                        </AccordionContent>
+                      </AccordionItem>
+                    );
+                  })}
+                </Accordion>
               </CardContent>
             </Card>
+          </TabsContent>
 
-            <div className="grid gap-6">
-              <Card className="rounded-[2rem] border-none bg-white shadow-xl shadow-slate-200/70">
-                <CardContent className="p-6 sm:p-7">
-                  <div className="mb-5 flex items-start gap-4">
-                    <div className="rounded-[1.5rem] bg-emerald-100 p-3 text-emerald-700">
-                      <Save className="h-6 w-6" />
-                    </div>
-                    <div>
-                      <p className="text-[11px] font-black uppercase tracking-[0.22em] text-slate-400">Dati associazione</p>
-                      <h2 className="mt-1 text-2xl font-black text-slate-900">Nome visibile</h2>
-                    </div>
-                  </div>
-
-                  <form onSubmit={handleSaveProfile} className="space-y-3">
-                    <Input
-                      value={associationName}
-                      onChange={(event) => setAssociationName(event.target.value)}
-                      placeholder="Es. Associazione Sportiva Aurora"
-                      className="h-12 rounded-2xl border-slate-200 bg-slate-50"
-                    />
-                    <Button type="submit" disabled={savingProfile} className="w-full rounded-2xl bg-sky-700 text-white hover:bg-sky-800">
-                      {savingProfile ? <LoaderCircle className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
-                      Salva nome associazione
-                    </Button>
-                  </form>
-                </CardContent>
-              </Card>
-
+          <TabsContent value="security">
+            <div className="grid gap-6 lg:grid-cols-2">
               <Card className="rounded-[2rem] border-none bg-white shadow-xl shadow-slate-200/70">
                 <CardContent className="p-6 sm:p-7">
                   <div className="mb-5 flex items-start gap-4">
@@ -409,13 +732,7 @@ const Settings = () => {
                   </div>
 
                   <form onSubmit={handleUpdateEmail} className="space-y-3">
-                    <Input
-                      value={nextEmail}
-                      onChange={(event) => setNextEmail(event.target.value)}
-                      type="email"
-                      placeholder="nuova-email@associazione.it"
-                      className="h-12 rounded-2xl border-slate-200 bg-slate-50"
-                    />
+                    <Input value={nextEmail} onChange={(event) => setNextEmail(event.target.value)} type="email" className="h-12 rounded-2xl border-slate-200 bg-slate-50" />
                     <Button type="submit" disabled={savingEmail} className="w-full rounded-2xl bg-slate-900 text-white hover:bg-slate-800">
                       {savingEmail ? <LoaderCircle className="mr-2 h-4 w-4 animate-spin" /> : <Mail className="mr-2 h-4 w-4" />}
                       Aggiorna email
@@ -437,13 +754,7 @@ const Settings = () => {
                   </div>
 
                   <form onSubmit={handleUpdatePassword} className="space-y-3">
-                    <Input
-                      value={newPassword}
-                      onChange={(event) => setNewPassword(event.target.value)}
-                      type="password"
-                      placeholder="Nuova password"
-                      className="h-12 rounded-2xl border-slate-200 bg-slate-50"
-                    />
+                    <Input value={newPassword} onChange={(event) => setNewPassword(event.target.value)} type="password" placeholder="Nuova password" className="h-12 rounded-2xl border-slate-200 bg-slate-50" />
                     <Button type="submit" disabled={savingPassword} className="w-full rounded-2xl bg-amber-500 text-white hover:bg-amber-600">
                       {savingPassword ? <LoaderCircle className="mr-2 h-4 w-4 animate-spin" /> : <KeyRound className="mr-2 h-4 w-4" />}
                       Aggiorna password
@@ -452,8 +763,8 @@ const Settings = () => {
                 </CardContent>
               </Card>
             </div>
-          </section>
-        )}
+          </TabsContent>
+        </Tabs>
       </main>
 
       <BottomNav />

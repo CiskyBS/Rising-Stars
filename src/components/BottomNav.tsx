@@ -12,7 +12,8 @@ const BottomNav = () => {
     { icon: Home, label: "Home", path: "/" },
     { icon: QrCode, label: "Scanner", path: "/scanner" },
     { icon: History, label: "Storico", path: "/history" },
-    { icon: Settings, label: "Profilo", path: "/settings" },
+    { icon: Settings, label: "Admin", path: "/settings" },
+
   ];
 
   return (

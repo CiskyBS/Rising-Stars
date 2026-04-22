@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
+
 import ChildCard from "@/components/ChildCard";
 import DatabaseSetupCard from "@/components/DatabaseSetupCard";
 import Logo from "@/components/Logo";
@@ -7,69 +8,46 @@ import BottomNav from "@/components/BottomNav";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { type AttendanceAction, type ChildRow, isSupabaseConfigured, supabase } from "@/lib/supabase";
+import {
+  type AssociationProfileRow,
+  type AttendanceAction,
+  type ChildRow,
+  type UserProfileRow,
+  ensureAdminContext,
+  getUserProfile,
+  isSupabaseConfigured,
+  logAuditEvent,
+  supabase,
+} from "@/lib/supabase";
 import { showError, showSuccess } from "@/utils/toast";
-import { Cloud, LoaderCircle, LogOut, MapPin, Plus, QrCode, Settings, Sparkles, Users } from "lucide-react";
+import { Cloud, LoaderCircle, LogOut, MapPin, Plus, QrCode, Settings, Sparkles, Users, WandSparkles } from "lucide-react";
 
 const LOCATION_STORAGE_KEY = "rising-stars-location";
+
+const splitFullName = (value: string) => {
+  const cleaned = value.trim().replace(/\s+/g, " ");
+  const [firstName = "", ...rest] = cleaned.split(" ");
+  return {
+    full_name: cleaned,
+    first_name: firstName,
+    last_name: rest.join(" "),
+  };
+};
 
 const Index = () => {
   const navigate = useNavigate();
   const routerLocation = useLocation();
+  const [association, setAssociation] = useState<AssociationProfileRow | null>(null);
+  const [profile, setProfile] = useState<UserProfileRow | null>(null);
   const [children, setChildren] = useState<ChildRow[]>([]);
   const [newChildName, setNewChildName] = useState("");
-  const [userEmail, setUserEmail] = useState("");
-  const [authChecked, setAuthChecked] = useState(false);
+  const [loadingPage, setLoadingPage] = useState(true);
   const [loadingChildren, setLoadingChildren] = useState(true);
   const [savingChild, setSavingChild] = useState(false);
   const [activeChildId, setActiveChildId] = useState<string | null>(null);
   const [deletingChildId, setDeletingChildId] = useState<string | null>(null);
   const [dbError, setDbError] = useState("");
   const [locationId, setLocationId] = useState(() => localStorage.getItem(LOCATION_STORAGE_KEY) ?? "");
-
-  useEffect(() => {
-    if (!supabase) {
-      setAuthChecked(true);
-      return;
-    }
-
-    let mounted = true;
-
-    supabase.auth.getSession().then(({ data }) => {
-      if (!mounted) {
-        return;
-      }
-
-      if (!data.session) {
-        navigate("/login", { replace: true });
-        setAuthChecked(true);
-        return;
-      }
-
-      setUserEmail(data.session.user.email ?? "Operatore");
-      setAuthChecked(true);
-    });
-
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (!mounted) {
-        return;
-      }
-
-      if (!session) {
-        navigate("/login", { replace: true });
-        return;
-      }
-
-      setUserEmail(session.user.email ?? "Operatore");
-    });
-
-    return () => {
-      mounted = false;
-      subscription.unsubscribe();
-    };
-  }, [navigate]);
 
   useEffect(() => {
     const scannedLocation = routerLocation.state?.locationId;
@@ -84,18 +62,18 @@ const Index = () => {
     navigate(routerLocation.pathname, { replace: true, state: null });
   }, [navigate, routerLocation.pathname, routerLocation.state]);
 
-  const loadChildren = useCallback(async () => {
+  const loadChildren = useCallback(async (associationId: string) => {
     if (!supabase) {
-      setDbError("Supabase non è configurato. Completa l'integrazione prima di usare il database online.");
+      setDbError("Supabase non è configurato.");
       setLoadingChildren(false);
       return;
     }
 
     setLoadingChildren(true);
-
     const { data, error } = await supabase
       .from("children")
-      .select("id, full_name, created_at")
+      .select("*")
+      .eq("association_id", associationId)
       .order("full_name", { ascending: true });
 
     if (error) {
@@ -111,46 +89,97 @@ const Index = () => {
   }, []);
 
   useEffect(() => {
-    if (!authChecked) {
+    if (!supabase) {
+      setDbError("Supabase non è configurato.");
+      setLoadingPage(false);
       return;
     }
 
-    void loadChildren();
-  }, [authChecked, loadChildren]);
+    let mounted = true;
+
+    supabase.auth.getUser().then(async ({ data, error }) => {
+      if (!mounted) {
+        return;
+      }
+
+      if (error || !data.user) {
+        navigate("/login", { replace: true });
+        return;
+      }
+
+      let currentProfile = await getUserProfile(data.user.id);
+
+      if (!currentProfile) {
+        const adminContext = await ensureAdminContext(data.user);
+        if (!adminContext) {
+          setLoadingPage(false);
+          return;
+        }
+        currentProfile = adminContext.profile;
+        setAssociation(adminContext.association);
+      }
+
+      if (currentProfile.role === "parent") {
+        navigate("/family", { replace: true });
+        return;
+      }
+
+      setProfile(currentProfile);
+
+      if (!association) {
+        const adminContext = await ensureAdminContext(data.user);
+        if (adminContext) {
+          setAssociation(adminContext.association);
+          void loadChildren(adminContext.association.id);
+        }
+      } else {
+        void loadChildren(association.id);
+      }
+
+      setLoadingPage(false);
+    });
+
+    return () => {
+      mounted = false;
+    };
+  }, [association, loadChildren, navigate]);
 
   const hasLocation = Boolean(locationId);
-
   const subtitle = useMemo(() => {
     if (hasLocation) {
-      return "Puoi registrare le presenze in tempo reale sul database online.";
+      return "Il centro è attivo: ora puoi registrare check-in e check-out sul database online.";
     }
 
-    return "Scansiona il QR del centro per attivare check-in e check-out.";
+    return "Scansiona il QR dell'associazione o imposta il centro manualmente per attivare le presenze.";
   }, [hasLocation]);
 
-  const handleAddChild = async (event: React.FormEvent<HTMLFormElement>) => {
+  const handleAddChild = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
-    const name = newChildName.trim();
+    if (!association || !supabase) {
 
-    if (!name) {
+      showError("Associazione non pronta");
+      return;
+    }
+
+    const trimmed = newChildName.trim();
+    if (!trimmed) {
       showError("Inserisci il nome del bambino");
       return;
     }
 
-    if (!supabase) {
-      showError("Supabase non è configurato");
-      return;
-    }
-
+    const nameParts = splitFullName(trimmed);
     setSavingChild(true);
-
     const { data, error } = await supabase
       .from("children")
-      .insert({ full_name: name })
-      .select("id, full_name, created_at")
+      .insert({
+        association_id: association.id,
+        full_name: nameParts.full_name,
+        first_name: nameParts.first_name,
+        last_name: nameParts.last_name,
+      })
+      .select("*")
       .single();
-
     setSavingChild(false);
 
     if (error) {
@@ -159,22 +188,27 @@ const Index = () => {
       return;
     }
 
-    setDbError("");
-    setChildren((currentChildren) => [...currentChildren, data as ChildRow].sort((a, b) => a.full_name.localeCompare(b.full_name)));
+    const nextChild = data as ChildRow;
+    setChildren((currentChildren) => [...currentChildren, nextChild].sort((a, b) => a.full_name.localeCompare(b.full_name)));
     setNewChildName("");
-    showSuccess(`${name} aggiunto al database`);
+    await logAuditEvent({
+      associationId: association.id,
+      actorRole: "admin",
+      entityType: "child",
+      entityId: nextChild.id,
+      action: "admin_child_created",
+      details: { full_name: nextChild.full_name },
+    });
+    showSuccess(`${nextChild.full_name} aggiunto all'associazione`);
   };
 
   const handleDeleteChild = async (child: ChildRow) => {
-    if (!supabase) {
-      showError("Supabase non è configurato");
+    if (!association || !supabase) {
       return;
     }
 
     setDeletingChildId(child.id);
-
     const { error } = await supabase.from("children").delete().eq("id", child.id);
-
     setDeletingChildId(null);
 
     if (error) {
@@ -184,28 +218,34 @@ const Index = () => {
     }
 
     setChildren((currentChildren) => currentChildren.filter((currentChild) => currentChild.id !== child.id));
+    await logAuditEvent({
+      associationId: association.id,
+      actorRole: "admin",
+      entityType: "child",
+      entityId: child.id,
+      action: "admin_child_removed",
+      details: { full_name: child.full_name },
+    });
     showSuccess(`${child.full_name} rimosso dall'associazione`);
   };
 
   const handleAttendance = async (child: ChildRow, action: AttendanceAction) => {
+    if (!association || !supabase) {
+      return;
+    }
+
     if (!locationId) {
       showError("Scansiona prima il QR del centro");
       return;
     }
 
-    if (!supabase) {
-      showError("Supabase non è configurato");
-      return;
-    }
-
     setActiveChildId(child.id);
-
     const { error } = await supabase.from("attendance_events").insert({
+      association_id: association.id,
       child_id: child.id,
       action,
       location_name: locationId,
     });
-
     setActiveChildId(null);
 
     if (error) {
@@ -214,6 +254,14 @@ const Index = () => {
       return;
     }
 
+    await logAuditEvent({
+      associationId: association.id,
+      actorRole: "admin",
+      entityType: "attendance_event",
+      entityId: child.id,
+      action: action === "check_in" ? "manual_check_in" : "manual_check_out",
+      details: { child_name: child.full_name, location_name: locationId },
+    });
     showSuccess(`${action === "check_in" ? "Check-in" : "Check-out"} salvato per ${child.full_name}`);
   };
 
@@ -230,11 +278,18 @@ const Index = () => {
     navigate("/login", { replace: true });
   };
 
-  const clearLocation = () => {
-    localStorage.removeItem(LOCATION_STORAGE_KEY);
-    setLocationId("");
-    showSuccess("Posizione rimossa");
-  };
+  if (loadingPage) {
+    return (
+      <div className="min-h-screen bg-slate-50 px-4 py-10 sm:px-6">
+        <Card className="mx-auto max-w-4xl rounded-[2rem] border-none bg-white shadow-lg shadow-slate-200/60">
+          <CardContent className="flex items-center justify-center gap-3 p-10 text-slate-500">
+            <LoaderCircle className="h-5 w-5 animate-spin" />
+            Caricamento pannello amministratore...
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-50 pb-28">
@@ -244,7 +299,7 @@ const Index = () => {
 
           <div className="flex items-center gap-2 sm:gap-3">
             <div className="hidden rounded-full bg-white px-4 py-2 text-sm font-bold text-slate-500 shadow-sm sm:block">
-              {userEmail || "Sessione demo"}
+              {profile?.email || "Admin"}
             </div>
             <Button
               variant="ghost"
@@ -271,21 +326,25 @@ const Index = () => {
           <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
             <div className="max-w-2xl">
               <div className="inline-flex items-center gap-2 rounded-full bg-white/15 px-4 py-2 text-[11px] font-black uppercase tracking-[0.28em] text-white/90">
-                <Cloud className="h-4 w-4" />
-                {isSupabaseConfigured ? "Database online" : "Configurazione richiesta"}
+                <WandSparkles className="h-4 w-4" />
+                Admin association builder
               </div>
               <h1 className="mt-5 text-3xl font-black leading-tight sm:text-4xl">
-                Dashboard presenze live per i tuoi bambini.
+                {association?.association_name || "La tua associazione"}
               </h1>
               <p className="mt-3 max-w-2xl text-sm font-medium text-white/80 sm:text-base">
-                Aggiungi i profili, scansiona il QR del centro e salva ogni passaggio direttamente su Supabase.
+                Qui gestisci branding, famiglie, QR, documenti e presenze. Il database online memorizza ogni passaggio in modo tracciabile.
               </p>
             </div>
 
-            <div className="grid gap-3 sm:grid-cols-2 lg:min-w-[320px]">
+            <div className="grid gap-3 sm:grid-cols-3 lg:min-w-[420px]">
               <div className="rounded-[1.75rem] bg-white/10 p-4 backdrop-blur-sm">
                 <p className="text-[11px] font-black uppercase tracking-[0.22em] text-white/70">Bambini</p>
                 <p className="mt-2 text-3xl font-black text-white">{children.length}</p>
+              </div>
+              <div className="rounded-[1.75rem] bg-white/10 p-4 backdrop-blur-sm">
+                <p className="text-[11px] font-black uppercase tracking-[0.22em] text-white/70">Invito</p>
+                <p className="mt-2 text-sm font-black text-white">{association?.invite_code || "—"}</p>
               </div>
               <div className="rounded-[1.75rem] bg-white/10 p-4 backdrop-blur-sm">
                 <p className="text-[11px] font-black uppercase tracking-[0.22em] text-white/70">Posizione</p>
@@ -312,7 +371,7 @@ const Index = () => {
                   </div>
                 </div>
 
-                <div className="flex flex-col gap-3 sm:min-w-[220px]">
+                <div className="flex flex-col gap-3 sm:min-w-[230px]">
                   <Button
                     onClick={() => navigate("/scanner")}
                     className={`h-12 rounded-2xl font-black text-white ${hasLocation ? "bg-emerald-600 hover:bg-emerald-700" : "bg-sky-700 hover:bg-sky-800"}`}
@@ -327,18 +386,8 @@ const Index = () => {
                     className="h-11 rounded-2xl border-slate-200 font-black text-slate-600"
                   >
                     <Settings className="mr-2 h-4 w-4" />
-                    Gestisci profilo
+                    Branding, link e documenti
                   </Button>
-                  {hasLocation && (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      onClick={clearLocation}
-                      className="h-11 rounded-2xl border-slate-200 font-black text-slate-600"
-                    >
-                      Rimuovi posizione
-                    </Button>
-                  )}
                 </div>
               </div>
             </CardContent>
@@ -351,10 +400,10 @@ const Index = () => {
                   <Sparkles className="h-6 w-6" />
                 </div>
                 <div className="flex-1">
-                  <p className="text-[11px] font-black uppercase tracking-[0.22em] text-slate-400">Nuovo profilo</p>
+                  <p className="text-[11px] font-black uppercase tracking-[0.22em] text-slate-400">Inserimento rapido</p>
                   <h2 className="mt-1 text-2xl font-black text-slate-900">Aggiungi un bambino</h2>
                   <p className="mt-2 text-sm font-medium text-slate-500">
-                    Il nome viene salvato online e sarà visibile subito anche da altri browser collegati allo stesso account.
+                    Puoi aggiungere un profilo rapido anche lato admin. I genitori poi completeranno tutti i dati di dettaglio dal loro portale.
                   </p>
                 </div>
               </div>
@@ -379,19 +428,17 @@ const Index = () => {
           </Card>
         </section>
 
-        {dbError && (
-          <DatabaseSetupCard message={`Supabase ha risposto con questo errore: ${dbError}`} />
-        )}
+        {dbError && <DatabaseSetupCard message={`Supabase ha risposto con questo errore: ${dbError}`} />}
 
         <section>
           <div className="mb-4 flex items-center justify-between px-1">
             <div>
-              <p className="text-[11px] font-black uppercase tracking-[0.24em] text-slate-400">Elenco autorizzati</p>
-              <h2 className="mt-1 text-2xl font-black text-slate-900">Bambini collegati al tuo account</h2>
+              <p className="text-[11px] font-black uppercase tracking-[0.24em] text-slate-400">Anagrafica associazione</p>
+              <h2 className="mt-1 text-2xl font-black text-slate-900">Bambini registrati</h2>
             </div>
             <div className="hidden items-center gap-2 rounded-full bg-white px-4 py-2 text-sm font-black text-slate-500 shadow-sm sm:flex">
-              <Users className="h-4 w-4 text-sky-600" />
-              {children.length} totali
+              <Cloud className="h-4 w-4 text-sky-600" />
+              {isSupabaseConfigured ? "Database online" : "Configurazione mancante"}
             </div>
           </div>
 
@@ -411,9 +458,9 @@ const Index = () => {
                   locationId={locationId}
                   isBusy={activeChildId === child.id}
                   isDeleting={deletingChildId === child.id}
-                  onCheckIn={() => handleAttendance(child, "check_in")}
-                  onCheckOut={() => handleAttendance(child, "check_out")}
-                  onDelete={() => handleDeleteChild(child)}
+                  onCheckIn={() => void handleAttendance(child, "check_in")}
+                  onCheckOut={() => void handleAttendance(child, "check_out")}
+                  onDelete={() => void handleDeleteChild(child)}
                 />
               ))}
             </div>
@@ -425,7 +472,7 @@ const Index = () => {
                 </div>
                 <h3 className="mt-5 text-2xl font-black text-slate-900">Nessun bambino registrato</h3>
                 <p className="mt-2 max-w-md text-sm font-medium text-slate-500">
-                  Inserisci il primo profilo qui sopra per iniziare subito a testare il database online.
+                  Dopo aver creato il link d’invito, i genitori potranno aggiungere i loro figli con tutti i dati anagrafici e sanitari dal portale dedicato.
                 </p>
               </CardContent>
             </Card>

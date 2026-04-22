@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { type FormEvent, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+
 import { Html5QrcodeScanner } from "html5-qrcode";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -90,7 +91,7 @@ const Scanner = () => {
     };
   }, [navigate]);
 
-  const handleManualSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+  const handleManualSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
     const nextLocation = manualLocation.trim();
