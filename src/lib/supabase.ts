@@ -1,7 +1,78 @@
-import { createClient } from '@supabase/supabase-js';
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
-// Questi valori verranno popolati automaticamente quando aggiungerai l'integrazione Supabase
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey);
+
+export const supabase: SupabaseClient | null = isSupabaseConfigured
+  ? createClient(supabaseUrl!, supabaseAnonKey!)
+  : null;
+
+export type AttendanceAction = "check_in" | "check_out";
+
+export interface ChildRow {
+  id: string;
+  full_name: string;
+  created_at: string;
+}
+
+export interface AttendanceRow {
+  id: string;
+  child_id: string;
+  action: AttendanceAction;
+  location_name: string;
+  created_at: string;
+  children?: {
+    full_name: string;
+  } | null;
+}
+
+export const DATABASE_SETUP_SQL = `create extension if not exists pgcrypto;
+
+create table if not exists public.children (
+  id uuid primary key default gen_random_uuid(),
+  owner_id uuid not null references auth.users(id) default auth.uid(),
+  full_name text not null check (char_length(trim(full_name)) > 1),
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.attendance_events (
+  id uuid primary key default gen_random_uuid(),
+  owner_id uuid not null references auth.users(id) default auth.uid(),
+  child_id uuid not null references public.children(id) on delete cascade,
+  action text not null check (action in ('check_in', 'check_out')),
+  location_name text not null,
+  created_at timestamptz not null default now()
+);
+
+alter table public.children enable row level security;
+alter table public.attendance_events enable row level security;
+
+drop policy if exists "children_select_own" on public.children;
+create policy "children_select_own"
+  on public.children
+  for select
+  to authenticated
+  using (owner_id = auth.uid());
+
+drop policy if exists "children_insert_own" on public.children;
+create policy "children_insert_own"
+  on public.children
+  for insert
+  to authenticated
+  with check (owner_id = auth.uid());
+
+drop policy if exists "attendance_select_own" on public.attendance_events;
+create policy "attendance_select_own"
+  on public.attendance_events
+  for select
+  to authenticated
+  using (owner_id = auth.uid());
+
+drop policy if exists "attendance_insert_own" on public.attendance_events;
+create policy "attendance_insert_own"
+  on public.attendance_events
+  for insert
+  to authenticated
+  with check (owner_id = auth.uid());`;
