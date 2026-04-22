@@ -2,9 +2,9 @@ import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { LogIn } from "lucide-react";
+import { Card, CardContent, CardDescription, CardHeader } from "@/components/ui/card";
 import { showSuccess, showError } from "@/utils/toast";
+import Logo from "@/components/Logo";
 
 const Login = () => {
   const [email, setEmail] = useState("");
@@ -13,7 +13,6 @@ const Login = () => {
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
-    // Qui andrà la logica di Supabase Auth
     if (email && password) {
       showSuccess("Accesso effettuato con successo!");
       navigate("/");
@@ -24,25 +23,22 @@ const Login = () => {
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-slate-50 p-4">
-      <Card className="w-full max-w-md border-none shadow-xl">
-        <CardHeader className="space-y-1 text-center">
-          <div className="flex justify-center mb-4">
-            <div className="p-3 bg-indigo-100 rounded-full">
-              <LogIn className="w-8 h-8 text-indigo-600" />
-            </div>
-          </div>
-          <CardTitle className="text-2xl font-bold">QR Check-in</CardTitle>
-          <CardDescription>Accedi per gestire i check-in dei bambini</CardDescription>
+      <Card className="w-full max-w-md border-none shadow-2xl bg-white/80 backdrop-blur-sm">
+        <CardHeader className="space-y-6 text-center pb-2">
+          <Logo variant="login" />
+          <CardDescription className="text-slate-500 font-medium">
+            Accedi per gestire i check-in dei bambini
+          </CardDescription>
         </CardHeader>
-        <CardContent>
-          <form onSubmit={handleLogin} className="space-y-4">
+        <CardContent className="pt-6">
+          <form onSubmit={handleLogin} className="space-y-5">
             <div className="space-y-2">
               <Input
                 type="email"
                 placeholder="Email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                className="rounded-xl"
+                className="rounded-2xl border-slate-200 h-12 focus:ring-navy"
               />
             </div>
             <div className="space-y-2">
@@ -51,13 +47,22 @@ const Login = () => {
                 placeholder="Password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="rounded-xl"
+                className="rounded-2xl border-slate-200 h-12 focus:ring-navy"
               />
             </div>
-            <Button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-700 rounded-xl py-6 text-lg">
+            <Button 
+              type="submit" 
+              className="w-full bg-navy hover:bg-navy/90 text-white rounded-2xl h-14 text-lg font-bold shadow-lg shadow-navy/20 transition-all active:scale-[0.98]"
+            >
               Accedi
             </Button>
           </form>
+          
+          <div className="mt-8 text-center">
+            <p className="text-xs text-slate-400 uppercase tracking-widest font-bold">
+              Powered by Rising Stars
+            </p>
+          </div>
         </CardContent>
       </Card>
     </div>
