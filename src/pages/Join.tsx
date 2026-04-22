@@ -24,6 +24,7 @@ import {
   REQUIRED_DOCUMENTS,
   buildChildFullName,
   getEmptyChildForm,
+  getLatestDocuments,
   logAuditEvent,
   supabase,
 } from "@/lib/supabase";
@@ -112,6 +113,7 @@ const Join = () => {
         .from("association_documents")
         .select("*")
         .eq("association_id", associationData.id)
+        .is("superseded_at", null)
         .order("uploaded_at", { ascending: false });
 
       if (documentsError) {
@@ -121,7 +123,7 @@ const Join = () => {
       }
 
       setAssociation(associationData as AssociationProfileRow);
-      setDocuments((documentsData ?? []) as AssociationDocumentRow[]);
+      setDocuments(getLatestDocuments((documentsData ?? []) as AssociationDocumentRow[]));
       setLoading(false);
     };
 
@@ -144,7 +146,6 @@ const Join = () => {
     event.preventDefault();
 
     if (!association || !supabase) {
-
       return;
     }
 
@@ -225,6 +226,7 @@ const Join = () => {
       return;
     }
 
+    const signedFullName = `${parentForm.first_name} ${parentForm.last_name}`.trim();
     const acceptancePayload = REQUIRED_DOCUMENTS.map((document) => {
       const uploadedDocument = documents.find((item) => item.document_type === document.type);
       return {
@@ -232,6 +234,13 @@ const Join = () => {
         document_id: uploadedDocument!.id,
         parent_user_id: parentUserId,
         accepted: true,
+        accepted_version: uploadedDocument!.version,
+        accepted_document_title: uploadedDocument!.title,
+        accepted_file_hash: uploadedDocument!.file_hash,
+        signed_full_name: signedFullName,
+        acceptance_source: "onboarding",
+        accepted_ip: "",
+        accepted_user_agent: navigator.userAgent,
       };
     });
 
@@ -375,6 +384,9 @@ const Join = () => {
                         <AccordionContent>
                           {uploadedDocument ? (
                             <div className="space-y-3">
+                              <div className="rounded-[1.25rem] bg-slate-50 p-4 text-sm font-medium text-slate-600">
+                                Versione {uploadedDocument.version} · Hash {uploadedDocument.file_hash.slice(0, 16)}…
+                              </div>
                               <Button asChild variant="outline" className="rounded-2xl border-slate-200">
                                 <a href={uploadedDocument.file_data} download={uploadedDocument.file_name}>
                                   Apri / scarica documento
@@ -388,7 +400,7 @@ const Join = () => {
                                   }
                                   className="h-5 w-5 rounded-md border-sky-400 data-[state=checked]:bg-sky-600"
                                 />
-                                <p className="text-sm font-black text-slate-700">Accetto questo documento</p>
+                                <p className="text-sm font-black text-slate-700">Accetto questa versione del documento</p>
                               </div>
                             </div>
                           ) : (

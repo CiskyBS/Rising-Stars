@@ -1,16 +1,20 @@
 import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
+import AuthorizedContactVerificationPanel from "@/components/AuthorizedContactVerificationPanel";
+import BottomNav from "@/components/BottomNav";
 import ChildCard from "@/components/ChildCard";
 import DatabaseSetupCard from "@/components/DatabaseSetupCard";
+import IncidentReportsPanel from "@/components/IncidentReportsPanel";
 import Logo from "@/components/Logo";
-import BottomNav from "@/components/BottomNav";
+import PrivacyRequestsPanel from "@/components/PrivacyRequestsPanel";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import {
   type AssociationProfileRow,
   type AttendanceAction,
+  type AuthorizedContactRow,
   type ChildRow,
   type UserProfileRow,
   ensureAdminContext,
@@ -40,6 +44,7 @@ const Index = () => {
   const [association, setAssociation] = useState<AssociationProfileRow | null>(null);
   const [profile, setProfile] = useState<UserProfileRow | null>(null);
   const [children, setChildren] = useState<ChildRow[]>([]);
+  const [authorizedContacts, setAuthorizedContacts] = useState<AuthorizedContactRow[]>([]);
   const [newChildName, setNewChildName] = useState("");
   const [loadingPage, setLoadingPage] = useState(true);
   const [loadingChildren, setLoadingChildren] = useState(true);
@@ -62,6 +67,21 @@ const Index = () => {
     navigate(routerLocation.pathname, { replace: true, state: null });
   }, [navigate, routerLocation.pathname, routerLocation.state]);
 
+  const loadAuthorizedContacts = useCallback(async (childIds: string[]) => {
+    if (!supabase || childIds.length === 0) {
+      setAuthorizedContacts([]);
+      return;
+    }
+
+    const { data, error } = await supabase.from("authorized_contacts").select("*").in("child_id", childIds).order("created_at", { ascending: false });
+    if (error) {
+      setDbError(error.message);
+      return;
+    }
+
+    setAuthorizedContacts((data ?? []) as AuthorizedContactRow[]);
+  }, []);
+
   const loadChildren = useCallback(async (associationId: string) => {
     if (!supabase) {
       setDbError("Supabase non è configurato.");
@@ -83,10 +103,12 @@ const Index = () => {
       return;
     }
 
+    const typedChildren = (data ?? []) as ChildRow[];
     setDbError("");
-    setChildren((data ?? []) as ChildRow[]);
+    setChildren(typedChildren);
+    await loadAuthorizedContacts(typedChildren.map((child) => child.id));
     setLoadingChildren(false);
-  }, []);
+  }, [loadAuthorizedContacts]);
 
   useEffect(() => {
     if (!supabase) {
@@ -157,7 +179,6 @@ const Index = () => {
     event.preventDefault();
 
     if (!association || !supabase) {
-
       showError("Associazione non pronta");
       return;
     }
@@ -189,8 +210,10 @@ const Index = () => {
     }
 
     const nextChild = data as ChildRow;
-    setChildren((currentChildren) => [...currentChildren, nextChild].sort((a, b) => a.full_name.localeCompare(b.full_name)));
+    const nextChildren = [...children, nextChild].sort((a, b) => a.full_name.localeCompare(b.full_name));
+    setChildren(nextChildren);
     setNewChildName("");
+    await loadAuthorizedContacts(nextChildren.map((child) => child.id));
     await logAuditEvent({
       associationId: association.id,
       actorRole: "admin",
@@ -217,7 +240,9 @@ const Index = () => {
       return;
     }
 
-    setChildren((currentChildren) => currentChildren.filter((currentChild) => currentChild.id !== child.id));
+    const nextChildren = children.filter((currentChild) => currentChild.id !== child.id);
+    setChildren(nextChildren);
+    await loadAuthorizedContacts(nextChildren.map((item) => item.id));
     await logAuditEvent({
       associationId: association.id,
       actorRole: "admin",
@@ -301,20 +326,10 @@ const Index = () => {
             <div className="hidden rounded-full bg-white px-4 py-2 text-sm font-bold text-slate-500 shadow-sm sm:block">
               {profile?.email || "Admin"}
             </div>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => navigate("/settings")}
-              className="rounded-full bg-white text-slate-500 shadow-sm hover:bg-slate-100"
-            >
+            <Button variant="ghost" size="icon" onClick={() => navigate("/settings")} className="rounded-full bg-white text-slate-500 shadow-sm hover:bg-slate-100">
               <Settings className="h-5 w-5" />
             </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={handleSignOut}
-              className="rounded-full bg-white text-slate-500 shadow-sm hover:bg-slate-100"
-            >
+            <Button variant="ghost" size="icon" onClick={handleSignOut} className="rounded-full bg-white text-slate-500 shadow-sm hover:bg-slate-100">
               <LogOut className="h-5 w-5" />
             </Button>
           </div>
@@ -329,11 +344,9 @@ const Index = () => {
                 <WandSparkles className="h-4 w-4" />
                 Admin association builder
               </div>
-              <h1 className="mt-5 text-3xl font-black leading-tight sm:text-4xl">
-                {association?.association_name || "La tua associazione"}
-              </h1>
+              <h1 className="mt-5 text-3xl font-black leading-tight sm:text-4xl">{association?.association_name || "La tua associazione"}</h1>
               <p className="mt-3 max-w-2xl text-sm font-medium text-white/80 sm:text-base">
-                Qui gestisci branding, famiglie, QR, documenti e presenze. Il database online memorizza ogni passaggio in modo tracciabile.
+                Qui gestisci branding, famiglie, QR, documenti, incidenti, workflow privacy e presenze. Tutto è tracciato sul database.
               </p>
             </div>
 
@@ -343,8 +356,8 @@ const Index = () => {
                 <p className="mt-2 text-3xl font-black text-white">{children.length}</p>
               </div>
               <div className="rounded-[1.75rem] bg-white/10 p-4 backdrop-blur-sm">
-                <p className="text-[11px] font-black uppercase tracking-[0.22em] text-white/70">Invito</p>
-                <p className="mt-2 text-sm font-black text-white">{association?.invite_code || "—"}</p>
+                <p className="text-[11px] font-black uppercase tracking-[0.22em] text-white/70">Autorizzati</p>
+                <p className="mt-2 text-3xl font-black text-white">{authorizedContacts.length}</p>
               </div>
               <div className="rounded-[1.75rem] bg-white/10 p-4 backdrop-blur-sm">
                 <p className="text-[11px] font-black uppercase tracking-[0.22em] text-white/70">Posizione</p>
@@ -364,27 +377,17 @@ const Index = () => {
                   </div>
                   <div>
                     <p className="text-[11px] font-black uppercase tracking-[0.22em] text-slate-400">Centro attivo</p>
-                    <h2 className="mt-1 text-2xl font-black text-slate-900">
-                      {hasLocation ? locationId : "Nessuna posizione rilevata"}
-                    </h2>
+                    <h2 className="mt-1 text-2xl font-black text-slate-900">{hasLocation ? locationId : "Nessuna posizione rilevata"}</h2>
                     <p className="mt-2 text-sm font-medium text-slate-500">{subtitle}</p>
                   </div>
                 </div>
 
                 <div className="flex flex-col gap-3 sm:min-w-[230px]">
-                  <Button
-                    onClick={() => navigate("/scanner")}
-                    className={`h-12 rounded-2xl font-black text-white ${hasLocation ? "bg-emerald-600 hover:bg-emerald-700" : "bg-sky-700 hover:bg-sky-800"}`}
-                  >
+                  <Button onClick={() => navigate("/scanner")} className={`h-12 rounded-2xl font-black text-white ${hasLocation ? "bg-emerald-600 hover:bg-emerald-700" : "bg-sky-700 hover:bg-sky-800"}`}>
                     <QrCode className="mr-2 h-4 w-4" />
                     {hasLocation ? "Cambia posizione" : "Scansiona QR"}
                   </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() => navigate("/settings")}
-                    className="h-11 rounded-2xl border-slate-200 font-black text-slate-600"
-                  >
+                  <Button type="button" variant="outline" onClick={() => navigate("/settings")} className="h-11 rounded-2xl border-slate-200 font-black text-slate-600">
                     <Settings className="mr-2 h-4 w-4" />
                     Branding, link e documenti
                   </Button>
@@ -409,17 +412,8 @@ const Index = () => {
               </div>
 
               <form onSubmit={handleAddChild} className="mt-6 flex flex-col gap-3 sm:flex-row">
-                <Input
-                  value={newChildName}
-                  onChange={(event) => setNewChildName(event.target.value)}
-                  placeholder="Es. Giulia Rossi"
-                  className="h-12 rounded-2xl border-slate-200 bg-slate-50"
-                />
-                <Button
-                  type="submit"
-                  disabled={savingChild}
-                  className="h-12 rounded-2xl bg-slate-900 px-6 font-black text-white hover:bg-slate-800"
-                >
+                <Input value={newChildName} onChange={(event) => setNewChildName(event.target.value)} placeholder="Es. Giulia Rossi" className="h-12 rounded-2xl border-slate-200 bg-slate-50" />
+                <Button type="submit" disabled={savingChild} className="h-12 rounded-2xl bg-slate-900 px-6 font-black text-white hover:bg-slate-800">
                   {savingChild ? <LoaderCircle className="mr-2 h-4 w-4 animate-spin" /> : <Plus className="mr-2 h-4 w-4" />}
                   Aggiungi
                 </Button>
@@ -478,6 +472,16 @@ const Index = () => {
             </Card>
           )}
         </section>
+
+        {association && (
+          <>
+            <AuthorizedContactVerificationPanel associationId={association.id} contacts={authorizedContacts} children={children} />
+            <div className="grid gap-6 xl:grid-cols-2">
+              <IncidentReportsPanel associationId={association.id} children={children} />
+              <PrivacyRequestsPanel mode="admin" associationId={association.id} />
+            </div>
+          </>
+        )}
       </main>
 
       <BottomNav />

@@ -13,6 +13,7 @@ import {
   type AssociationDocumentRow,
   type AssociationProfileRow,
   REQUIRED_DOCUMENTS,
+  createDocumentHash,
   createInviteCode,
   createQrValue,
   ensureAdminContext,
@@ -64,7 +65,7 @@ const Settings = () => {
   const [uploadingType, setUploadingType] = useState<string | null>(null);
   const [dbError, setDbError] = useState("");
   const [inviteOrigin, setInviteOrigin] = useState("");
-  const [documentDrafts, setDocumentDrafts] = useState<Record<string, { title: string; file: File | null }>>({});
+  const [documentDrafts, setDocumentDrafts] = useState<Record<string, { title: string; file: File | null; language: string }>>({});
 
   const loadDocuments = useCallback(async (associationId: string) => {
     if (!supabase) {
@@ -152,7 +153,6 @@ const Settings = () => {
     event.preventDefault();
 
     if (!association || !supabase) {
-
       return;
     }
 
@@ -216,17 +216,34 @@ const Settings = () => {
 
     setUploadingType(documentType);
     const fileData = await readFileAsDataUrl(draft.file);
-    const { error } = await supabase.from("association_documents").upsert(
-      {
-        association_id: association.id,
-        document_type: documentType,
-        title: draft.title.trim() || REQUIRED_DOCUMENTS.find((item) => item.type === documentType)?.label || "Documento",
-        file_name: draft.file.name,
-        file_data: fileData,
-        required: true,
-      },
-      { onConflict: "association_id,document_type" },
-    );
+    const fileHash = await createDocumentHash(fileData);
+    const versionsForType = documents.filter((item) => item.document_type === documentType);
+    const currentVersion = versionsForType.reduce((max, item) => Math.max(max, item.version || 1), 0);
+
+    const { error: supersedeError } = await supabase
+      .from("association_documents")
+      .update({ superseded_at: new Date().toISOString() })
+      .eq("association_id", association.id)
+      .eq("document_type", documentType)
+      .is("superseded_at", null);
+
+    if (supersedeError) {
+      setUploadingType(null);
+      showError(supersedeError.message);
+      return;
+    }
+
+    const { error } = await supabase.from("association_documents").insert({
+      association_id: association.id,
+      document_type: documentType,
+      title: draft.title.trim() || REQUIRED_DOCUMENTS.find((item) => item.type === documentType)?.label || "Documento",
+      file_name: draft.file.name,
+      file_data: fileData,
+      required: true,
+      language: draft.language || "it",
+      version: currentVersion + 1,
+      file_hash: fileHash,
+    });
     setUploadingType(null);
 
     if (error) {
@@ -241,15 +258,14 @@ const Settings = () => {
       actorRole: "admin",
       entityType: "association_document",
       action: "document_uploaded",
-      details: { document_type: documentType, file_name: draft.file.name },
+      details: { document_type: documentType, file_name: draft.file.name, version: currentVersion + 1, file_hash: fileHash },
     });
-    showSuccess("Documento caricato con successo");
+    showSuccess(`Nuova versione documento caricata: v${currentVersion + 1}`);
   };
 
   const handleUpdateEmail = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!supabase || !association) {
-
       return;
     }
 
@@ -404,23 +420,13 @@ const Settings = () => {
       <header className="sticky top-0 z-20 border-b border-white/60 bg-slate-50/95 px-4 py-4 backdrop-blur-sm sm:px-6">
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => navigate("/")}
-              className="rounded-full bg-white shadow-sm hover:bg-slate-100"
-            >
+            <Button variant="ghost" size="icon" onClick={() => navigate("/")} className="rounded-full bg-white shadow-sm hover:bg-slate-100">
               <ArrowLeft className="h-5 w-5" />
             </Button>
             <Logo variant="header" />
           </div>
 
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={handleSignOut}
-            className="rounded-full bg-white text-slate-500 shadow-sm hover:bg-slate-100"
-          >
+          <Button variant="ghost" size="icon" onClick={handleSignOut} className="rounded-full bg-white text-slate-500 shadow-sm hover:bg-slate-100">
             <LogOut className="h-5 w-5" />
           </Button>
         </div>
@@ -434,11 +440,9 @@ const Settings = () => {
                 <ShieldCheck className="h-4 w-4" />
                 Control room admin
               </div>
-              <h1 className="mt-5 text-3xl font-black leading-tight sm:text-4xl">
-                Personalizza l’app e invita le famiglie.
-              </h1>
+              <h1 className="mt-5 text-3xl font-black leading-tight sm:text-4xl">Personalizza l’app e governa la compliance.</h1>
               <p className="mt-3 text-sm font-medium text-white/80 sm:text-base">
-                Colori, logo, documenti obbligatori, QR personale e link di onboarding convivono tutti qui, con tracciamento sul database.
+                Branding, documenti versionati, QR personale e link di onboarding convivono qui con tracciamento completo.
               </p>
             </div>
 
@@ -518,9 +522,7 @@ const Settings = () => {
                   </div>
 
                   <div className="rounded-[2rem] p-6 text-white shadow-xl" style={{ backgroundColor: primaryColor }}>
-                    <div className="rounded-full bg-white/15 px-4 py-2 text-[11px] font-black uppercase tracking-[0.22em] w-fit">
-                      Anteprima famiglie
-                    </div>
+                    <div className="w-fit rounded-full bg-white/15 px-4 py-2 text-[11px] font-black uppercase tracking-[0.22em]">Anteprima famiglie</div>
                     <div className="mt-6 flex items-center gap-4">
                       <div className="flex h-20 w-20 items-center justify-center overflow-hidden rounded-[1.75rem] bg-white/20">
                         {logoPreview ? <img src={logoPreview} alt="Logo associazione" className="h-full w-full object-cover" /> : <Logo variant="header" className="text-white [&_span]:text-white" />}
@@ -557,7 +559,7 @@ const Settings = () => {
                     </div>
                   </div>
 
-                  <div className="rounded-[1.5rem] bg-slate-50 p-4 text-sm font-medium text-slate-700 break-all">{inviteLink || "Link non disponibile"}</div>
+                  <div className="rounded-[1.5rem] bg-slate-50 p-4 text-sm font-medium break-all text-slate-700">{inviteLink || "Link non disponibile"}</div>
 
                   <div className="grid gap-3 sm:grid-cols-2">
                     <Button onClick={() => void copyText(inviteLink, "Link copiato negli appunti")} className="rounded-2xl bg-slate-900 text-white hover:bg-slate-800">
@@ -584,12 +586,10 @@ const Settings = () => {
                     </Button>
                   </div>
 
-                  <div className="flex flex-col gap-3 sm:flex-row">
-                    <Button type="button" variant="outline" onClick={handleRegenerateInvite} disabled={regeneratingInvite} className="rounded-2xl border-slate-200">
-                      {regeneratingInvite ? <LoaderCircle className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
-                      Rigenera link
-                    </Button>
-                  </div>
+                  <Button type="button" variant="outline" onClick={handleRegenerateInvite} disabled={regeneratingInvite} className="rounded-2xl border-slate-200">
+                    {regeneratingInvite ? <LoaderCircle className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
+                    Rigenera link
+                  </Button>
                 </CardContent>
               </Card>
 
@@ -602,9 +602,6 @@ const Settings = () => {
                     <div>
                       <p className="text-[11px] font-black uppercase tracking-[0.22em] text-slate-400">QR associazione</p>
                       <h2 className="mt-1 text-2xl font-black text-slate-900">Centro / posizione</h2>
-                      <p className="mt-2 text-sm font-medium text-slate-500">
-                        Questo QR può essere stampato o mostrato all’operatore. Quando viene scansionato nello scanner, l’app imposta automaticamente il nome dell’associazione come centro attivo.
-                      </p>
                     </div>
                   </div>
 
@@ -613,7 +610,7 @@ const Settings = () => {
                       <div className="rounded-[2rem] border border-slate-200 bg-slate-50 p-4">
                         <img src={qrCodeImageUrl} alt="QR personale associazione" className="mx-auto w-full max-w-[300px] rounded-[1.5rem] bg-white p-4 shadow-inner" />
                       </div>
-                      <div className="rounded-[1.5rem] bg-slate-50 p-4 text-sm font-medium text-slate-700 break-all">{association.qr_code_value}</div>
+                      <div className="rounded-[1.5rem] bg-slate-50 p-4 text-sm font-medium break-all text-slate-700">{association.qr_code_value}</div>
                       <div className="grid gap-3 sm:grid-cols-2">
                         <Button onClick={() => void copyText(association.qr_code_value, "Codice QR copiato")} className="rounded-2xl bg-slate-900 text-white hover:bg-slate-800">
                           <Copy className="mr-2 h-4 w-4" />
@@ -640,40 +637,59 @@ const Settings = () => {
                   </div>
                   <div>
                     <p className="text-[11px] font-black uppercase tracking-[0.22em] text-slate-400">Firma digitale guidata</p>
-                    <h2 className="mt-1 text-2xl font-black text-slate-900">Documenti obbligatori</h2>
+                    <h2 className="mt-1 text-2xl font-black text-slate-900">Documenti obbligatori versionati</h2>
                     <p className="mt-2 text-sm font-medium text-slate-500">
-                      Carica qui i documenti già pronti. Il genitore li visualizza durante la registrazione e li accetta prima di completare l’account.
+                      Ogni nuova sostituzione crea una nuova versione, mantiene hash del file e non perde la prova delle accettazioni precedenti.
                     </p>
                   </div>
                 </div>
 
                 <Accordion type="single" collapsible className="rounded-[1.5rem] border border-slate-200 px-4">
                   {REQUIRED_DOCUMENTS.map((document) => {
-                    const uploadedDocument = documents.find((item) => item.document_type === document.type);
-                    const draft = documentDrafts[document.type] ?? { title: uploadedDocument?.title ?? document.label, file: null };
+                    const versions = documents.filter((item) => item.document_type === document.type).sort((a, b) => b.version - a.version);
+                    const currentDocument = versions.find((item) => item.superseded_at === null) ?? versions[0];
+                    const draft = documentDrafts[document.type] ?? { title: currentDocument?.title ?? document.label, file: null, language: currentDocument?.language ?? "it" };
 
                     return (
                       <AccordionItem key={document.type} value={document.type} className="border-slate-200">
                         <AccordionTrigger className="text-left text-base font-black text-slate-900 hover:no-underline">
                           <div>
                             <p>{document.label}</p>
-                            <p className="mt-1 text-sm font-medium text-slate-500">{uploadedDocument ? `Caricato: ${uploadedDocument.file_name}` : document.description}</p>
+                            <p className="mt-1 text-sm font-medium text-slate-500">
+                              {currentDocument ? `Versione corrente: v${currentDocument.version} · ${currentDocument.file_name}` : document.description}
+                            </p>
                           </div>
                         </AccordionTrigger>
                         <AccordionContent>
                           <div className="space-y-4 pb-2">
-                            <div className="space-y-2">
-                              <label className="text-sm font-black text-slate-700">Titolo</label>
-                              <Input
-                                value={draft.title}
-                                onChange={(event) =>
-                                  setDocumentDrafts((current) => ({
-                                    ...current,
-                                    [document.type]: { ...draft, title: event.target.value },
-                                  }))
-                                }
-                                className="h-12 rounded-2xl border-slate-200 bg-slate-50"
-                              />
+                            <div className="grid gap-4 md:grid-cols-2">
+                              <div className="space-y-2">
+                                <label className="text-sm font-black text-slate-700">Titolo</label>
+                                <Input
+                                  value={draft.title}
+                                  onChange={(event) =>
+                                    setDocumentDrafts((current) => ({
+                                      ...current,
+                                      [document.type]: { ...draft, title: event.target.value },
+                                    }))
+                                  }
+                                  className="h-12 rounded-2xl border-slate-200 bg-slate-50"
+                                />
+                              </div>
+                              <div className="space-y-2">
+                                <label className="text-sm font-black text-slate-700">Lingua</label>
+                                <Input
+                                  value={draft.language}
+                                  onChange={(event) =>
+                                    setDocumentDrafts((current) => ({
+                                      ...current,
+                                      [document.type]: { ...draft, language: event.target.value || "it" },
+                                    }))
+                                  }
+                                  placeholder="it"
+                                  className="h-12 rounded-2xl border-slate-200 bg-slate-50"
+                                />
+                              </div>
                             </div>
                             <div className="space-y-2">
                               <label className="text-sm font-black text-slate-700">File</label>
@@ -690,23 +706,40 @@ const Settings = () => {
                               />
                             </div>
                             <div className="flex flex-col gap-3 sm:flex-row">
-                              <Button
-                                type="button"
-                                onClick={() => void handleUploadDocument(document.type)}
-                                disabled={uploadingType === document.type}
-                                className="rounded-2xl bg-sky-700 text-white hover:bg-sky-800"
-                              >
+                              <Button type="button" onClick={() => void handleUploadDocument(document.type)} disabled={uploadingType === document.type} className="rounded-2xl bg-sky-700 text-white hover:bg-sky-800">
                                 {uploadingType === document.type ? <LoaderCircle className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}
-                                {uploadedDocument ? "Sostituisci documento" : "Carica documento"}
+                                {currentDocument ? `Carica nuova versione (v${(currentDocument.version ?? 0) + 1})` : "Carica documento"}
                               </Button>
-                              {uploadedDocument && (
+                              {currentDocument && (
                                 <Button asChild variant="outline" className="rounded-2xl border-slate-200">
-                                  <a href={uploadedDocument.file_data} download={uploadedDocument.file_name}>
-                                    Scarica documento corrente
+                                  <a href={currentDocument.file_data} download={currentDocument.file_name}>
+                                    Scarica versione corrente
                                   </a>
                                 </Button>
                               )}
                             </div>
+
+                            {versions.length > 0 && (
+                              <div className="rounded-[1.5rem] bg-slate-50 p-4">
+                                <p className="text-sm font-black text-slate-800">Storico versioni</p>
+                                <div className="mt-3 space-y-2">
+                                  {versions.map((version) => (
+                                    <div key={version.id} className="rounded-[1rem] bg-white p-3 text-sm font-medium text-slate-600">
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        <span className="font-black text-slate-900">v{version.version}</span>
+                                        <span>{version.file_name}</span>
+                                        {version.superseded_at === null && (
+                                          <span className="rounded-full bg-emerald-100 px-3 py-1 text-[10px] font-black uppercase tracking-[0.2em] text-emerald-700">
+                                            Corrente
+                                          </span>
+                                        )}
+                                      </div>
+                                      <p className="mt-1 break-all text-xs text-slate-500">Hash: {version.file_hash}</p>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
                           </div>
                         </AccordionContent>
                       </AccordionItem>

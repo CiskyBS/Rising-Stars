@@ -20,6 +20,10 @@ export type DocumentType =
 export type LegalRole = "mother" | "father" | "legal_guardian" | "other";
 export type EmergencyActionPlan = "call_parent_first" | "call_ambulance_if_needed";
 export type ImageUsageConsent = "none" | "internal_only" | "public_allowed";
+export type AuthorizedContactActionType = "drop_off" | "pick_up" | "verification";
+export type PrivacyRequestType = "export_data" | "delete_data" | "rectification";
+export type PrivacyRequestStatus = "open" | "in_progress" | "completed" | "rejected";
+export type IncidentSeverity = "low" | "medium" | "high" | "critical";
 
 export interface AssociationProfileRow {
   id: string;
@@ -107,6 +111,11 @@ export interface AuthorizedContactRow {
   can_pick_up: boolean;
   document_number: string;
   verification_note: string;
+  is_active: boolean;
+  pickup_pin: string;
+  pickup_qr_token: string;
+  verified_by_admin: boolean;
+  verified_at: string | null;
   created_at: string;
 }
 
@@ -118,6 +127,10 @@ export interface AssociationDocumentRow {
   file_name: string;
   file_data: string;
   required: boolean;
+  language: string;
+  version: number;
+  file_hash: string;
+  superseded_at: string | null;
   uploaded_at: string;
 }
 
@@ -127,7 +140,56 @@ export interface DocumentAcceptanceRow {
   document_id: string;
   parent_user_id: string;
   accepted: boolean;
+  accepted_version: number;
+  accepted_document_title: string;
+  accepted_file_hash: string;
+  signed_full_name: string;
+  acceptance_source: string;
+  accepted_ip: string;
+  accepted_user_agent: string;
   accepted_at: string;
+}
+
+export interface AuthorizedContactAccessLogRow {
+  id: string;
+  association_id: string;
+  child_id: string;
+  authorized_contact_id: string;
+  action_type: AuthorizedContactActionType;
+  verification_method: "manual" | "pin" | "qr";
+  success: boolean;
+  performed_by_user_id: string | null;
+  note: string;
+  created_at: string;
+}
+
+export interface IncidentReportRow {
+  id: string;
+  association_id: string;
+  child_id: string;
+  reported_by_user_id: string | null;
+  severity: IncidentSeverity;
+  incident_type: string;
+  description: string;
+  actions_taken: string;
+  ambulance_called: boolean;
+  parent_contacted: boolean;
+  parent_contacted_at: string | null;
+  resolved: boolean;
+  resolved_at: string | null;
+  created_at: string;
+}
+
+export interface PrivacyRequestRow {
+  id: string;
+  association_id: string;
+  parent_user_id: string;
+  request_type: PrivacyRequestType;
+  status: PrivacyRequestStatus;
+  request_note: string;
+  admin_note: string;
+  created_at: string;
+  resolved_at: string | null;
 }
 
 export interface AuditLogRow {
@@ -190,6 +252,7 @@ export interface AuthorizedContactValues {
   can_pick_up: boolean;
   document_number: string;
   verification_note: string;
+  is_active: boolean;
 }
 
 export const REQUIRED_DOCUMENTS: { type: DocumentType; label: string; description: string }[] = [
@@ -227,6 +290,9 @@ export const createInviteCode = () => `RS-${crypto.randomUUID().slice(0, 8).toUp
 
 export const createQrValue = (seed?: string) => `rising-stars:${seed ?? "association"}:${crypto.randomUUID()}`;
 
+export const createAuthorizedContactQrToken = (seed?: string) =>
+  `pickup:${seed ?? "contact"}:${crypto.randomUUID()}`;
+
 export const buildChildFullName = (values: Pick<ChildFormValues, "first_name" | "last_name">) =>
   `${values.first_name.trim()} ${values.last_name.trim()}`.trim();
 
@@ -263,6 +329,7 @@ export const getEmptyAuthorizedContact = (): AuthorizedContactValues => ({
   can_pick_up: true,
   document_number: "",
   verification_note: "",
+  is_active: true,
 });
 
 export const readFileAsDataUrl = (file: File) =>
@@ -272,6 +339,31 @@ export const readFileAsDataUrl = (file: File) =>
     reader.onerror = () => reject(new Error("Impossibile leggere il file"));
     reader.readAsDataURL(file);
   });
+
+export const createDocumentHash = async (value: string) => {
+  if (!window.crypto?.subtle) {
+    return btoa(unescape(encodeURIComponent(value))).slice(0, 64);
+  }
+
+  const bytes = new TextEncoder().encode(value);
+  const digest = await window.crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest))
+    .map((item) => item.toString(16).padStart(2, "0"))
+    .join("");
+};
+
+export const getLatestDocuments = (documents: AssociationDocumentRow[]) => {
+  const byType = new Map<DocumentType, AssociationDocumentRow>();
+
+  for (const document of documents) {
+    const current = byType.get(document.document_type);
+    if (!current || document.version > current.version) {
+      byType.set(document.document_type, document);
+    }
+  }
+
+  return REQUIRED_DOCUMENTS.map((item) => byType.get(item.type)).filter(Boolean) as AssociationDocumentRow[];
+};
 
 export const logAuditEvent = async ({
   associationId,
@@ -537,7 +629,8 @@ alter table public.association_documents add column if not exists language text 
 alter table public.association_documents add column if not exists version integer not null default 1;
 alter table public.association_documents add column if not exists file_hash text not null default '';
 alter table public.association_documents add column if not exists superseded_at timestamptz;
-create unique index if not exists association_documents_unique_type_idx on public.association_documents(association_id, document_type);
+drop index if exists public.association_documents_unique_type_idx;
+create index if not exists association_documents_association_type_idx on public.association_documents(association_id, document_type);
 
 create table if not exists public.document_acceptances (
   id uuid primary key default gen_random_uuid(),

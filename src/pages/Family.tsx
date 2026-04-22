@@ -4,17 +4,23 @@ import { useNavigate } from "react-router-dom";
 import AuthorizedContactsEditor from "@/components/AuthorizedContactsEditor";
 import ChildProfileForm from "@/components/ChildProfileForm";
 import DatabaseSetupCard from "@/components/DatabaseSetupCard";
+import ParentDocumentsPanel from "@/components/ParentDocumentsPanel";
+import PrivacyRequestsPanel from "@/components/PrivacyRequestsPanel";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import {
+  type AssociationDocumentRow,
   type AssociationProfileRow,
   type AuthorizedContactRow,
   type AuthorizedContactValues,
   type ChildFormValues,
   type ChildRow,
+  type DocumentAcceptanceRow,
   type UserProfileRow,
   buildChildFullName,
+  createAuthorizedContactQrToken,
   getEmptyChildForm,
+  getLatestDocuments,
   getUserProfile,
   logAuditEvent,
   supabase,
@@ -52,11 +58,14 @@ const Family = () => {
   const [association, setAssociation] = useState<AssociationProfileRow | null>(null);
   const [children, setChildren] = useState<ChildRow[]>([]);
   const [contactsByChild, setContactsByChild] = useState<Record<string, AuthorizedContactRow[]>>({});
+  const [documents, setDocuments] = useState<AssociationDocumentRow[]>([]);
+  const [acceptances, setAcceptances] = useState<DocumentAcceptanceRow[]>([]);
   const [selectedChildId, setSelectedChildId] = useState<string | null>(null);
   const [editingChildId, setEditingChildId] = useState<string | null>(null);
   const [childForm, setChildForm] = useState<ChildFormValues>(getEmptyChildForm());
   const [loading, setLoading] = useState(true);
   const [savingChild, setSavingChild] = useState(false);
+  const [acceptingDocumentType, setAcceptingDocumentType] = useState<string | null>(null);
   const [dbError, setDbError] = useState("");
 
   const loadContacts = useCallback(async (childIds: string[]) => {
@@ -65,7 +74,7 @@ const Family = () => {
       return;
     }
 
-    const { data, error } = await supabase.from("authorized_contacts").select("*").in("child_id", childIds);
+    const { data, error } = await supabase.from("authorized_contacts").select("*").in("child_id", childIds).order("created_at", { ascending: false });
     if (error) {
       setDbError(error.message);
       return;
@@ -103,6 +112,35 @@ const Family = () => {
       await loadContacts(typedChildren.map((child) => child.id));
     }
   }, [loadContacts]);
+
+  const loadDocumentsAndAcceptances = useCallback(async (associationId: string, userId: string) => {
+    if (!supabase) {
+      return;
+    }
+
+    const [{ data: docsData, error: docsError }, { data: acceptancesData, error: acceptancesError }] = await Promise.all([
+      supabase
+        .from("association_documents")
+        .select("*")
+        .eq("association_id", associationId)
+        .is("superseded_at", null)
+        .order("uploaded_at", { ascending: false }),
+      supabase
+        .from("document_acceptances")
+        .select("*")
+        .eq("association_id", associationId)
+        .eq("parent_user_id", userId)
+        .order("accepted_at", { ascending: false }),
+    ]);
+
+    if (docsError || acceptancesError) {
+      setDbError(docsError?.message || acceptancesError?.message || "Errore documenti");
+      return;
+    }
+
+    setDocuments(getLatestDocuments((docsData ?? []) as AssociationDocumentRow[]));
+    setAcceptances((acceptancesData ?? []) as DocumentAcceptanceRow[]);
+  }, []);
 
   useEffect(() => {
     if (!supabase) {
@@ -143,14 +181,17 @@ const Family = () => {
         .maybeSingle();
 
       setAssociation((associationData ?? null) as AssociationProfileRow | null);
-      await loadChildren(data.user.id);
+      await Promise.all([
+        loadChildren(data.user.id),
+        currentProfile.association_id ? loadDocumentsAndAcceptances(currentProfile.association_id, data.user.id) : Promise.resolve(),
+      ]);
       setLoading(false);
     });
 
     return () => {
       mounted = false;
     };
-  }, [loadChildren, navigate]);
+  }, [loadChildren, loadDocumentsAndAcceptances, navigate]);
 
   const selectedChild = useMemo(() => children.find((child) => child.id === selectedChildId) ?? null, [children, selectedChildId]);
 
@@ -169,7 +210,6 @@ const Family = () => {
     event.preventDefault();
 
     if (!supabase || !profile?.association_id) {
-
       return;
     }
 
@@ -273,7 +313,15 @@ const Family = () => {
       return;
     }
 
-    const { data, error } = await supabase.from("authorized_contacts").insert({ child_id: selectedChildId, ...values }).select("*").single();
+    const { data, error } = await supabase
+      .from("authorized_contacts")
+      .insert({
+        child_id: selectedChildId,
+        ...values,
+        pickup_qr_token: createAuthorizedContactQrToken(selectedChildId),
+      })
+      .select("*")
+      .single();
     if (error) {
       showError(error.message);
       return;
@@ -282,7 +330,7 @@ const Family = () => {
     const createdContact = data as AuthorizedContactRow;
     setContactsByChild((current) => ({
       ...current,
-      [selectedChildId]: [...(current[selectedChildId] ?? []), createdContact],
+      [selectedChildId]: [createdContact, ...(current[selectedChildId] ?? [])],
     }));
     await logAuditEvent({
       associationId: profile.association_id,
@@ -292,7 +340,7 @@ const Family = () => {
       action: "authorized_contact_created",
       details: { child_id: selectedChildId, full_name: values.full_name },
     });
-    showSuccess("Persona autorizzata aggiunta");
+    showSuccess("Persona autorizzata aggiunta con QR dedicato");
   };
 
   const handleUpdateContact = async (contactId: string, values: AuthorizedContactValues) => {
@@ -348,6 +396,111 @@ const Family = () => {
     showSuccess("Persona autorizzata rimossa");
   };
 
+  const handleToggleContactActive = async (contactId: string, nextActive: boolean) => {
+    if (!supabase || !profile?.association_id || !selectedChildId) {
+      return;
+    }
+
+    const { data, error } = await supabase
+      .from("authorized_contacts")
+      .update({ is_active: nextActive })
+      .eq("id", contactId)
+      .select("*")
+      .single();
+
+    if (error) {
+      showError(error.message);
+      return;
+    }
+
+    const updatedContact = data as AuthorizedContactRow;
+    setContactsByChild((current) => ({
+      ...current,
+      [selectedChildId]: (current[selectedChildId] ?? []).map((contact) => (contact.id === contactId ? updatedContact : contact)),
+    }));
+    showSuccess(nextActive ? "Contatto riattivato" : "Contatto disattivato");
+  };
+
+  const handleRegenerateContactQr = async (contactId: string) => {
+    if (!supabase || !profile?.association_id || !selectedChildId) {
+      return;
+    }
+
+    const { data, error } = await supabase
+      .from("authorized_contacts")
+      .update({ pickup_qr_token: createAuthorizedContactQrToken(selectedChildId), verified_by_admin: false, verified_at: null })
+      .eq("id", contactId)
+      .select("*")
+      .single();
+
+    if (error) {
+      showError(error.message);
+      return;
+    }
+
+    const updatedContact = data as AuthorizedContactRow;
+    setContactsByChild((current) => ({
+      ...current,
+      [selectedChildId]: (current[selectedChildId] ?? []).map((contact) => (contact.id === contactId ? updatedContact : contact)),
+    }));
+    await logAuditEvent({
+      associationId: profile.association_id,
+      actorRole: "parent",
+      entityType: "authorized_contact",
+      entityId: contactId,
+      action: "authorized_contact_qr_regenerated",
+      details: { child_id: selectedChildId },
+    });
+    showSuccess("QR rigenerato correttamente");
+  };
+
+  const handleAcceptDocument = async (document: AssociationDocumentRow) => {
+    if (!supabase || !profile?.association_id || !profile) {
+      return;
+    }
+
+    setAcceptingDocumentType(document.document_type);
+    const signedFullName = `${profile.first_name} ${profile.last_name}`.trim();
+    const { data, error } = await supabase
+      .from("document_acceptances")
+      .upsert(
+        {
+          association_id: profile.association_id,
+          document_id: document.id,
+          parent_user_id: profile.owner_id,
+          accepted: true,
+          accepted_version: document.version,
+          accepted_document_title: document.title,
+          accepted_file_hash: document.file_hash,
+          signed_full_name: signedFullName,
+          acceptance_source: "family_portal",
+          accepted_user_agent: navigator.userAgent,
+          accepted_ip: "",
+        },
+        { onConflict: "document_id,parent_user_id" },
+      )
+      .select("*")
+      .single();
+    setAcceptingDocumentType(null);
+
+    if (error) {
+      showError(error.message);
+      return;
+    }
+
+    const acceptedRow = data as DocumentAcceptanceRow;
+    setAcceptances((current) => [acceptedRow, ...current.filter((item) => item.id !== acceptedRow.id)]);
+    await logAuditEvent({
+      associationId: profile.association_id,
+      actorRole: "parent",
+      entityType: "document_acceptance",
+      entityId: acceptedRow.id,
+      action: "document_version_accepted",
+      details: { document_type: document.document_type, version: document.version, title: document.title },
+    });
+    showSuccess(`Hai accettato la versione ${document.version} di ${document.title}`);
+  };
+
   const handleSignOut = async () => {
     if (supabase) {
       await supabase.auth.signOut();
@@ -384,7 +537,7 @@ const Family = () => {
               </div>
               <h1 className="mt-5 text-4xl font-black leading-tight sm:text-5xl">{association?.app_title || association?.association_name || "Portale famiglie"}</h1>
               <p className="mt-4 max-w-2xl text-base font-medium text-white/80">
-                Il tuo account è registrato una sola volta. Da qui puoi creare, modificare o eliminare i profili dei bambini e gestire le persone autorizzate al drop-off e pick-up.
+                Da qui puoi gestire i profili dei bambini, i documenti legali, le persone autorizzate con QR e le richieste privacy.
               </p>
             </div>
             <div className="rounded-[2rem] bg-white/10 p-5 backdrop-blur-sm lg:min-w-[280px]">
@@ -438,6 +591,12 @@ const Family = () => {
                     </div>
                   </article>
                 ))}
+
+                {children.length === 0 && (
+                  <div className="rounded-[1.5rem] border border-dashed border-slate-200 bg-slate-50 p-6 text-center text-sm font-medium text-slate-500">
+                    Nessun bambino creato ancora.
+                  </div>
+                )}
               </div>
             </CardContent>
           </Card>
@@ -473,12 +632,25 @@ const Family = () => {
                     onCreate={handleCreateContact}
                     onUpdate={handleUpdateContact}
                     onDelete={handleDeleteContact}
+                    onToggleActive={handleToggleContactActive}
+                    onRegenerateQr={handleRegenerateContactQr}
                   />
                 </CardContent>
               </Card>
             )}
           </div>
         </section>
+
+        <ParentDocumentsPanel
+          documents={documents}
+          acceptances={acceptances}
+          acceptingType={acceptingDocumentType}
+          onAccept={handleAcceptDocument}
+        />
+
+        {profile?.association_id && profile?.owner_id && (
+          <PrivacyRequestsPanel mode="parent" associationId={profile.association_id} parentUserId={profile.owner_id} />
+        )}
       </div>
     </div>
   );
