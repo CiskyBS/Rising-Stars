@@ -5,6 +5,7 @@ import ChildCard from "@/components/ChildCard";
 import { showSuccess } from "@/utils/toast";
 import { MadeWithDyad } from "@/components/made-with-dyad";
 import Logo from "@/components/Logo";
+import BottomNav from "@/components/BottomNav";
 
 const Index = () => {
   const location = useLocation();
@@ -21,7 +22,7 @@ const Index = () => {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 pb-20">
+    <div className="min-h-screen bg-slate-50 pb-24">
       <header className="bg-white border-b px-6 py-3 sticky top-0 z-10 shadow-sm">
         <div className="max-w-4xl mx-auto flex justify-between items-center">
           <Logo variant="header" />
@@ -79,6 +80,7 @@ const Index = () => {
         </div>
       </main>
 
+      <BottomNav />
       <MadeWithDyad />
     </div>
   );
