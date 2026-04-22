@@ -10,6 +10,7 @@ const Scanner = () => {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    // Inizializzazione dello scanner
     const scanner = new Html5QrcodeScanner(
       "reader",
       { 
@@ -22,6 +23,7 @@ const Scanner = () => {
 
     scanner.render(
       (decodedText) => {
+        // Successo: fermiamo lo scanner e torniamo alla home con il dato
         scanner.clear().then(() => {
           showSuccess(`Posizione rilevata: ${decodedText}`);
           navigate("/", { state: { locationId: decodedText } });
@@ -35,6 +37,7 @@ const Scanner = () => {
       }
     );
 
+    // Cleanup quando il componente viene smontato
     return () => {
       scanner.clear().catch(err => console.error("Cleanup scanner error:", err));
     };
