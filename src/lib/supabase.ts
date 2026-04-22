@@ -403,6 +403,7 @@ create table if not exists public.association_profiles (
 
 alter table public.association_profiles add column if not exists app_title text not null default 'Family Portal';
 alter table public.association_profiles add column if not exists invite_code text not null default 'TEMP-CODE';
+alter table public.association_profiles add column if not exists qr_code_value text not null default 'TEMP-QR';
 alter table public.association_profiles add column if not exists primary_color text not null default '#0f766e';
 alter table public.association_profiles add column if not exists secondary_color text not null default '#f59e0b';
 alter table public.association_profiles add column if not exists accent_color text not null default '#7c3aed';
@@ -501,10 +502,21 @@ create table if not exists public.authorized_contacts (
   can_pick_up boolean not null default true,
   document_number text not null default '',
   verification_note text not null default '',
+  is_active boolean not null default true,
+  pickup_pin text not null default '',
+  pickup_qr_token text not null default '',
+  verified_by_admin boolean not null default false,
+  verified_at timestamptz,
   created_at timestamptz not null default now()
 );
 
+alter table public.authorized_contacts add column if not exists is_active boolean not null default true;
+alter table public.authorized_contacts add column if not exists pickup_pin text not null default '';
+alter table public.authorized_contacts add column if not exists pickup_qr_token text not null default '';
+alter table public.authorized_contacts add column if not exists verified_by_admin boolean not null default false;
+alter table public.authorized_contacts add column if not exists verified_at timestamptz;
 create index if not exists authorized_contacts_child_id_idx on public.authorized_contacts(child_id);
+create index if not exists authorized_contacts_pickup_qr_token_idx on public.authorized_contacts(pickup_qr_token);
 
 create table if not exists public.association_documents (
   id uuid primary key default gen_random_uuid(),
@@ -514,9 +526,17 @@ create table if not exists public.association_documents (
   file_name text not null default '',
   file_data text not null,
   required boolean not null default true,
+  language text not null default 'it',
+  version integer not null default 1,
+  file_hash text not null default '',
+  superseded_at timestamptz,
   uploaded_at timestamptz not null default now()
 );
 
+alter table public.association_documents add column if not exists language text not null default 'it';
+alter table public.association_documents add column if not exists version integer not null default 1;
+alter table public.association_documents add column if not exists file_hash text not null default '';
+alter table public.association_documents add column if not exists superseded_at timestamptz;
 create unique index if not exists association_documents_unique_type_idx on public.association_documents(association_id, document_type);
 
 create table if not exists public.document_acceptances (
@@ -525,10 +545,25 @@ create table if not exists public.document_acceptances (
   document_id uuid not null references public.association_documents(id) on delete cascade,
   parent_user_id uuid not null references auth.users(id) on delete cascade,
   accepted boolean not null default true,
+  accepted_version integer not null default 1,
+  accepted_document_title text not null default '',
+  accepted_file_hash text not null default '',
+  signed_full_name text not null default '',
+  acceptance_source text not null default 'app',
+  accepted_ip text not null default '',
+  accepted_user_agent text not null default '',
   accepted_at timestamptz not null default now()
 );
 
+alter table public.document_acceptances add column if not exists accepted_version integer not null default 1;
+alter table public.document_acceptances add column if not exists accepted_document_title text not null default '';
+alter table public.document_acceptances add column if not exists accepted_file_hash text not null default '';
+alter table public.document_acceptances add column if not exists signed_full_name text not null default '';
+alter table public.document_acceptances add column if not exists acceptance_source text not null default 'app';
+alter table public.document_acceptances add column if not exists accepted_ip text not null default '';
+alter table public.document_acceptances add column if not exists accepted_user_agent text not null default '';
 create unique index if not exists document_acceptances_unique_idx on public.document_acceptances(document_id, parent_user_id);
+create index if not exists document_acceptances_parent_user_id_idx on public.document_acceptances(parent_user_id);
 
 create table if not exists public.attendance_events (
   id uuid primary key default gen_random_uuid(),
@@ -542,6 +577,58 @@ create table if not exists public.attendance_events (
 
 alter table public.attendance_events add column if not exists association_id uuid references public.association_profiles(id) on delete cascade;
 create index if not exists attendance_events_association_id_idx on public.attendance_events(association_id);
+
+create table if not exists public.authorized_contact_access_logs (
+  id uuid primary key default gen_random_uuid(),
+  association_id uuid not null references public.association_profiles(id) on delete cascade,
+  child_id uuid not null references public.children(id) on delete cascade,
+  authorized_contact_id uuid not null references public.authorized_contacts(id) on delete cascade,
+  action_type text not null check (action_type in ('drop_off', 'pick_up', 'verification')),
+  verification_method text not null default 'manual' check (verification_method in ('manual', 'pin', 'qr')),
+  success boolean not null default true,
+  performed_by_user_id uuid references auth.users(id) on delete set null,
+  note text not null default '',
+  created_at timestamptz not null default now()
+);
+
+create index if not exists authorized_contact_access_logs_association_id_idx on public.authorized_contact_access_logs(association_id);
+create index if not exists authorized_contact_access_logs_child_id_idx on public.authorized_contact_access_logs(child_id);
+create index if not exists authorized_contact_access_logs_contact_id_idx on public.authorized_contact_access_logs(authorized_contact_id);
+
+create table if not exists public.incident_reports (
+  id uuid primary key default gen_random_uuid(),
+  association_id uuid not null references public.association_profiles(id) on delete cascade,
+  child_id uuid not null references public.children(id) on delete cascade,
+  reported_by_user_id uuid references auth.users(id) on delete set null,
+  severity text not null default 'medium' check (severity in ('low', 'medium', 'high', 'critical')),
+  incident_type text not null default 'general',
+  description text not null default '',
+  actions_taken text not null default '',
+  ambulance_called boolean not null default false,
+  parent_contacted boolean not null default false,
+  parent_contacted_at timestamptz,
+  resolved boolean not null default false,
+  resolved_at timestamptz,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists incident_reports_association_id_idx on public.incident_reports(association_id);
+create index if not exists incident_reports_child_id_idx on public.incident_reports(child_id);
+
+create table if not exists public.privacy_requests (
+  id uuid primary key default gen_random_uuid(),
+  association_id uuid not null references public.association_profiles(id) on delete cascade,
+  parent_user_id uuid not null references auth.users(id) on delete cascade,
+  request_type text not null check (request_type in ('export_data', 'delete_data', 'rectification')),
+  status text not null default 'open' check (status in ('open', 'in_progress', 'completed', 'rejected')),
+  request_note text not null default '',
+  admin_note text not null default '',
+  created_at timestamptz not null default now(),
+  resolved_at timestamptz
+);
+
+create index if not exists privacy_requests_association_id_idx on public.privacy_requests(association_id);
+create index if not exists privacy_requests_parent_user_id_idx on public.privacy_requests(parent_user_id);
 
 create table if not exists public.audit_logs (
   id uuid primary key default gen_random_uuid(),
@@ -564,6 +651,9 @@ alter table public.authorized_contacts enable row level security;
 alter table public.association_documents enable row level security;
 alter table public.document_acceptances enable row level security;
 alter table public.attendance_events enable row level security;
+alter table public.authorized_contact_access_logs enable row level security;
+alter table public.incident_reports enable row level security;
+alter table public.privacy_requests enable row level security;
 alter table public.audit_logs enable row level security;
 
 drop policy if exists "association_profiles_select_access" on public.association_profiles;
@@ -867,6 +957,126 @@ create policy "attendance_events_insert_access"
     or exists (
       select 1 from public.children c
       where c.id = child_id and c.parent_user_id = auth.uid() and c.association_id = association_id
+    )
+  );
+
+drop policy if exists "authorized_contact_access_logs_select_access" on public.authorized_contact_access_logs;
+create policy "authorized_contact_access_logs_select_access"
+  on public.authorized_contact_access_logs
+  for select
+  to authenticated
+  using (
+    exists (
+      select 1 from public.association_profiles ap
+      where ap.id = association_id and ap.owner_id = auth.uid()
+    )
+    or exists (
+      select 1 from public.children c
+      where c.id = child_id and c.parent_user_id = auth.uid()
+    )
+  );
+
+drop policy if exists "authorized_contact_access_logs_insert_access" on public.authorized_contact_access_logs;
+create policy "authorized_contact_access_logs_insert_access"
+  on public.authorized_contact_access_logs
+  for insert
+  to authenticated
+  with check (
+    exists (
+      select 1 from public.association_profiles ap
+      where ap.id = association_id and ap.owner_id = auth.uid()
+    )
+    or exists (
+      select 1 from public.children c
+      where c.id = child_id and c.parent_user_id = auth.uid()
+    )
+  );
+
+drop policy if exists "incident_reports_select_access" on public.incident_reports;
+create policy "incident_reports_select_access"
+  on public.incident_reports
+  for select
+  to authenticated
+  using (
+    exists (
+      select 1 from public.association_profiles ap
+      where ap.id = association_id and ap.owner_id = auth.uid()
+    )
+    or exists (
+      select 1 from public.children c
+      where c.id = child_id and c.parent_user_id = auth.uid()
+    )
+  );
+
+drop policy if exists "incident_reports_insert_access" on public.incident_reports;
+create policy "incident_reports_insert_access"
+  on public.incident_reports
+  for insert
+  to authenticated
+  with check (
+    exists (
+      select 1 from public.association_profiles ap
+      where ap.id = association_id and ap.owner_id = auth.uid()
+    )
+    or exists (
+      select 1 from public.children c
+      where c.id = child_id and c.parent_user_id = auth.uid() and c.association_id = association_id
+    )
+  );
+
+drop policy if exists "incident_reports_update_access" on public.incident_reports;
+create policy "incident_reports_update_access"
+  on public.incident_reports
+  for update
+  to authenticated
+  using (
+    exists (
+      select 1 from public.association_profiles ap
+      where ap.id = association_id and ap.owner_id = auth.uid()
+    )
+  )
+  with check (
+    exists (
+      select 1 from public.association_profiles ap
+      where ap.id = association_id and ap.owner_id = auth.uid()
+    )
+  );
+
+drop policy if exists "privacy_requests_select_access" on public.privacy_requests;
+create policy "privacy_requests_select_access"
+  on public.privacy_requests
+  for select
+  to authenticated
+  using (
+    parent_user_id = auth.uid()
+    or exists (
+      select 1 from public.association_profiles ap
+      where ap.id = association_id and ap.owner_id = auth.uid()
+    )
+  );
+
+drop policy if exists "privacy_requests_insert_own" on public.privacy_requests;
+create policy "privacy_requests_insert_own"
+  on public.privacy_requests
+  for insert
+  to authenticated
+  with check (parent_user_id = auth.uid());
+
+drop policy if exists "privacy_requests_update_admin" on public.privacy_requests;
+create policy "privacy_requests_update_admin"
+  on public.privacy_requests
+  for update
+  to authenticated
+  using (
+    exists (
+      select 1 from public.association_profiles ap
+      where ap.id = association_id and ap.owner_id = auth.uid()
+    )
+  )
+  with check (
+    exists (
+      select 1 from public.association_profiles ap
+      where ap.id = association_id and ap.owner_id = auth.uid()
     )
   );
 
