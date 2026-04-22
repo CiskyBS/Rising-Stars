@@ -9,7 +9,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { type AttendanceAction, type ChildRow, isSupabaseConfigured, supabase } from "@/lib/supabase";
 import { showError, showSuccess } from "@/utils/toast";
-import { Cloud, LoaderCircle, LogOut, MapPin, Plus, QrCode, Sparkles, Users } from "lucide-react";
+import { Cloud, LoaderCircle, LogOut, MapPin, Plus, QrCode, Settings, Sparkles, Users } from "lucide-react";
 
 const LOCATION_STORAGE_KEY = "rising-stars-location";
 
@@ -23,6 +23,7 @@ const Index = () => {
   const [loadingChildren, setLoadingChildren] = useState(true);
   const [savingChild, setSavingChild] = useState(false);
   const [activeChildId, setActiveChildId] = useState<string | null>(null);
+  const [deletingChildId, setDeletingChildId] = useState<string | null>(null);
   const [dbError, setDbError] = useState("");
   const [locationId, setLocationId] = useState(() => localStorage.getItem(LOCATION_STORAGE_KEY) ?? "");
 
@@ -164,6 +165,28 @@ const Index = () => {
     showSuccess(`${name} aggiunto al database`);
   };
 
+  const handleDeleteChild = async (child: ChildRow) => {
+    if (!supabase) {
+      showError("Supabase non è configurato");
+      return;
+    }
+
+    setDeletingChildId(child.id);
+
+    const { error } = await supabase.from("children").delete().eq("id", child.id);
+
+    setDeletingChildId(null);
+
+    if (error) {
+      setDbError(error.message);
+      showError(error.message);
+      return;
+    }
+
+    setChildren((currentChildren) => currentChildren.filter((currentChild) => currentChild.id !== child.id));
+    showSuccess(`${child.full_name} rimosso dall'associazione`);
+  };
+
   const handleAttendance = async (child: ChildRow, action: AttendanceAction) => {
     if (!locationId) {
       showError("Scansiona prima il QR del centro");
@@ -223,6 +246,14 @@ const Index = () => {
             <div className="hidden rounded-full bg-white px-4 py-2 text-sm font-bold text-slate-500 shadow-sm sm:block">
               {userEmail || "Sessione demo"}
             </div>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => navigate("/settings")}
+              className="rounded-full bg-white text-slate-500 shadow-sm hover:bg-slate-100"
+            >
+              <Settings className="h-5 w-5" />
+            </Button>
             <Button
               variant="ghost"
               size="icon"
@@ -288,6 +319,15 @@ const Index = () => {
                   >
                     <QrCode className="mr-2 h-4 w-4" />
                     {hasLocation ? "Cambia posizione" : "Scansiona QR"}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => navigate("/settings")}
+                    className="h-11 rounded-2xl border-slate-200 font-black text-slate-600"
+                  >
+                    <Settings className="mr-2 h-4 w-4" />
+                    Gestisci profilo
                   </Button>
                   {hasLocation && (
                     <Button
@@ -370,8 +410,10 @@ const Index = () => {
                   name={child.full_name}
                   locationId={locationId}
                   isBusy={activeChildId === child.id}
+                  isDeleting={deletingChildId === child.id}
                   onCheckIn={() => handleAttendance(child, "check_in")}
                   onCheckOut={() => handleAttendance(child, "check_out")}
+                  onDelete={() => handleDeleteChild(child)}
                 />
               ))}
             </div>

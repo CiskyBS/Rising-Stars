@@ -4,6 +4,7 @@ import { Html5QrcodeScanner } from "html5-qrcode";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { supabase } from "@/lib/supabase";
 import { showError, showSuccess } from "@/utils/toast";
 import { ArrowLeft, PencilLine, QrCode, RefreshCw } from "lucide-react";
 
@@ -17,8 +18,28 @@ const Scanner = () => {
   useEffect(() => {
     let isMounted = true;
 
-    const applyLocation = (value: string) => {
-      const nextLocation = value.trim();
+    const resolveLocationName = async (value: string) => {
+      const nextValue = value.trim();
+
+      if (!nextValue) {
+        return "";
+      }
+
+      if (!supabase) {
+        return nextValue;
+      }
+
+      const { data } = await supabase
+        .from("association_profiles")
+        .select("association_name")
+        .eq("qr_code_value", nextValue)
+        .maybeSingle();
+
+      return data?.association_name?.trim() || nextValue;
+    };
+
+    const applyLocation = async (value: string) => {
+      const nextLocation = await resolveLocationName(value);
 
       if (!nextLocation) {
         return;
@@ -44,8 +65,12 @@ const Scanner = () => {
         (decodedText) => {
           scanner
             .clear()
-            .then(() => applyLocation(decodedText))
-            .catch(() => applyLocation(decodedText));
+            .then(() => {
+              void applyLocation(decodedText);
+            })
+            .catch(() => {
+              void applyLocation(decodedText);
+            });
         },
         () => {},
       );
@@ -102,7 +127,7 @@ const Scanner = () => {
             <div className="border-b border-slate-100 px-6 py-5">
               <h1 className="text-2xl font-black text-slate-900">Scansiona il QR del centro</h1>
               <p className="mt-2 text-sm font-medium text-slate-500">
-                Dopo la scansione, la posizione viene salvata e riutilizzata anche se ricarichi la pagina.
+                Se il QR appartiene alla tua associazione, verrà riconosciuto automaticamente e mostrerà il nome impostato nel profilo.
               </p>
             </div>
 
@@ -123,7 +148,7 @@ const Scanner = () => {
 
           <Card className="rounded-[2.5rem] border-none bg-sky-700 text-white shadow-2xl shadow-sky-950/20">
             <CardContent className="p-6 sm:p-8">
-              <div className="rounded-full bg-white/15 p-3 text-white w-fit">
+              <div className="w-fit rounded-full bg-white/15 p-3 text-white">
                 <QrCode className="h-6 w-6" />
               </div>
               <h2 className="mt-6 text-3xl font-black leading-tight">Funziona anche senza fotocamera.</h2>

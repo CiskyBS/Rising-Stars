@@ -28,6 +28,17 @@ export interface AttendanceRow {
   } | null;
 }
 
+export interface AssociationProfileRow {
+  id: string;
+  owner_id: string;
+  association_name: string;
+  qr_code_value: string;
+  created_at: string;
+}
+
+export const getQrCodeImageUrl = (value: string) =>
+  `https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=${encodeURIComponent(value)}`;
+
 export const DATABASE_SETUP_SQL = `create extension if not exists pgcrypto;
 
 create table if not exists public.children (
@@ -46,8 +57,17 @@ create table if not exists public.attendance_events (
   created_at timestamptz not null default now()
 );
 
+create table if not exists public.association_profiles (
+  id uuid primary key default gen_random_uuid(),
+  owner_id uuid not null unique references auth.users(id) default auth.uid(),
+  association_name text not null default 'La tua associazione',
+  qr_code_value text not null unique,
+  created_at timestamptz not null default now()
+);
+
 alter table public.children enable row level security;
 alter table public.attendance_events enable row level security;
+alter table public.association_profiles enable row level security;
 
 drop policy if exists "children_select_own" on public.children;
 create policy "children_select_own"
@@ -63,6 +83,13 @@ create policy "children_insert_own"
   to authenticated
   with check (owner_id = auth.uid());
 
+drop policy if exists "children_delete_own" on public.children;
+create policy "children_delete_own"
+  on public.children
+  for delete
+  to authenticated
+  using (owner_id = auth.uid());
+
 drop policy if exists "attendance_select_own" on public.attendance_events;
 create policy "attendance_select_own"
   on public.attendance_events
@@ -75,4 +102,26 @@ create policy "attendance_insert_own"
   on public.attendance_events
   for insert
   to authenticated
+  with check (owner_id = auth.uid());
+
+drop policy if exists "association_profiles_select_own" on public.association_profiles;
+create policy "association_profiles_select_own"
+  on public.association_profiles
+  for select
+  to authenticated
+  using (owner_id = auth.uid());
+
+drop policy if exists "association_profiles_insert_own" on public.association_profiles;
+create policy "association_profiles_insert_own"
+  on public.association_profiles
+  for insert
+  to authenticated
+  with check (owner_id = auth.uid());
+
+drop policy if exists "association_profiles_update_own" on public.association_profiles;
+create policy "association_profiles_update_own"
+  on public.association_profiles
+  for update
+  to authenticated
+  using (owner_id = auth.uid())
   with check (owner_id = auth.uid());`;
